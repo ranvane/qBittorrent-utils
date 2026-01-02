@@ -1,6 +1,6 @@
 beautifulsoup4
-qbittorrent_api==2023.9.53
-Requests==2.31.0
+qbittorrent_api
+Requests
 tqdm
 loguru
 

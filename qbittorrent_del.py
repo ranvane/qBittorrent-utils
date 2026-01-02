@@ -413,6 +413,35 @@ def set_excluded_file_names():
             disconnect_from_qbittorrent(client)
 
 
+def cancel_downloading_files_with_name_and_size(client):
+    """
+
+    这个函数用于取消下载文件名中包含指定字符串同时大小小于一定的文件，其作用是遍历qBittorrent客户端中的所有种子文件，并检查每个文件的后缀名是否在给定的文件扩展名列表中。如果找到匹配的文件，并且文件的优先级大于0，函数将使用qBittorrent客户端提供的API调用来取消该文件的下载，设置其优先级为0。
+
+    参数：
+    client（qbittorrentapi.Client）：与qBittorrent客户端的连接对象，用于获取种子信息和执行操作。
+
+    """
+    logger.info("取消下载文件名中包含指定字符串同时大小小于 size 的文件...")
+    # 1024 * 1024 = 1 MB
+    size = 5 * 1024 * 1024  # 5 MB
+    excluded__names = [
+        "！.mp4",
+    ]
+    for torrent in client.torrents.info():
+        for file in torrent.files:
+
+            if file.priority > 0:  # 只替换优先级大于0的文件
+                for name in excluded__names:
+                    if name in file.name and file.size > size:
+                        # logger.info(f"取消下载：{file.name} {file.priority}")
+                        try:
+                            client.torrents_file_priority(torrent.hash, file.index, 0)
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logger.error(f"取消下载：{file.name} 失败！{e} ")
+
+
 def main():
 
     client = connect_to_qbittorrent()
