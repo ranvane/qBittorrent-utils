@@ -433,10 +433,11 @@ def cancel_downloading_files_with_name_and_size(client):
 
             if file.priority > 0:  # 只替换优先级大于0的文件
                 for name in excluded__names:
-                    if name in file.name and file.size > size:
+                    if name in file.name and file.size < size:
                         # logger.info(f"取消下载：{file.name} {file.priority}")
                         try:
                             client.torrents_file_priority(torrent.hash, file.index, 0)
+                            logger.error(f"取消下载：{file.name} 成功！")
                             time.sleep(0.5)
                         except Exception as e:
                             logger.error(f"取消下载：{file.name} 失败！{e} ")
