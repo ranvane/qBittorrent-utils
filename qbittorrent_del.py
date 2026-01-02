@@ -20,7 +20,7 @@ from regex_pattern import (
 
 
 BASE_DIR = os.path.dirname(__file__)
-completed_dir = "/vol1/1000/download/complete/"
+completed_dir = "/vol1/1000/download/completed/"
 
 replace_regex_list = [re.compile(regex, re.IGNORECASE) for regex in replace_list]
 
@@ -35,7 +35,7 @@ def connect_to_qbittorrent():
         logger.info("成功连接到 qBittorrent 客户端")
         return client
     except qbittorrentapi.LoginFailed as e:
-        logger.info(f"连接到 qBittorrent 客户端失败：{e}")
+        logger.error(f"连接到 qBittorrent 客户端失败：{e}")
         return None
 
 
@@ -144,7 +144,7 @@ def rename_files(client, replace_patterns, delay=0.2):
     """
     # 如果没有提供任何正则表达式，则跳过文件重命名操作
     if not replace_patterns:
-        logger.info("未提供任何正则表达式，跳过文件重命名操作。")
+        logger.warning("未提供任何正则表达式，跳过文件重命名操作。")
         return
 
     logger.info("开始重命名包含指定字符串的文件...")
@@ -437,7 +437,7 @@ def cancel_downloading_files_with_name_and_size(client):
                         # logger.info(f"取消下载：{file.name} {file.priority}")
                         try:
                             client.torrents_file_priority(torrent.hash, file.index, 0)
-                            logger.error(f"取消下载：{file.name} 成功！")
+                            logger.info(f"取消下载：{file.name} 成功！")
                             time.sleep(0.5)
                         except Exception as e:
                             logger.error(f"取消下载：{file.name} 失败！{e} ")
