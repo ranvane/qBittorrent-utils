@@ -453,6 +453,7 @@ def main():
             replace_folders_name(client, replace_list)
             rename_torrent_name(client, replace_list)
             rename_files(client, replace_list)
+            cancel_downloading_files_with_name_and_size(client)
             set_excluded_file_names()
             # gen_del_bash()
 
