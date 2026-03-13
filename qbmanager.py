@@ -350,7 +350,6 @@ def main():
     主函数
     程序入口点，启动qBittorrent管理器
     """
-    logger.info("QB Manager started")  # 记录程序启动日志
     Manager().run()  # 创建管理器实例并运行主循环
 
 
