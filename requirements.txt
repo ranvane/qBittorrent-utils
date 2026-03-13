@@ -1,6 +1,4 @@
-beautifulsoup4
 qbittorrent_api
 Requests
-tqdm
 loguru
 

@@ -5,7 +5,7 @@ import traceback
 
 from loguru import logger
 
-from qb_utils import parse_size, sanitize_name
+from qb_utils import parse_size, sanitize_name, remove_by_match
 
 
 class Condition:
@@ -40,22 +40,25 @@ class Condition:
         try:
             if self.filename:  # 如果设置了文件名匹配条件
                 for p in self.filename:  # 遍历所有文件名匹配模式
-                    if fnmatch.fnmatch(file.name, p):  # 使用shell风格通配符匹配文件名
+                    if fnmatch.fnmatch(file.name.lower(),
+                                       p):  # 先将文件名转换为小写，再使用shell风格通配符匹配文件名
+                        logger.debug(f"匹配文件名规则: {file.name}")
                         return True
 
             if self.ext:  # 如果设置了扩展名匹配条件
                 for e in self.ext:  # 遍历所有扩展名
                     if file.ext == e:  # 检查文件扩展名是否匹配
+                        logger.debug(f"匹配扩展名规则: {file.name}")
                         return True
 
-            if (
-                self.min_size and file.size < self.min_size
-            ):  # 如果设置了最小大小限制且文件小于限制
+            if (self.min_size
+                    and file.size < self.min_size):  # 如果设置了最小大小限制且文件小于限制
+                logger.debug(f"匹配 min_size 规则: {self.min_size}")
                 return True
 
-            if (
-                self.max_size and file.size > self.max_size
-            ):  # 如果设置了最大大小限制且文件大于限制
+            if (self.max_size
+                    and file.size > self.max_size):  # 如果设置了最大大小限制且文件大于限制
+                logger.debug(f"匹配 max_size 规则: {self.max_size}")
                 return True
 
             return False  # 文件不满足任何条件
@@ -71,14 +74,16 @@ class Rule:
     包含一个条件对象，定义了如何匹配文件的规则
     """
 
-    def __init__(self, cond):
+    def __init__(self, cond, raw=None):
         """
         初始化规则对象
 
         参数:
             cond (dict): 条件配置字典
+            raw (str, optional): 原始规则文本（用于调试），默认值为None
         """
-        self.cond = Condition(cond)  # 创建条件对象
+        self.cond = Condition(cond)
+        self.raw = raw  # 原始规则文本（用于调试）
 
     def match(self, file):
         """
@@ -132,7 +137,6 @@ class RuleEngine:
         self.last_mtime = mtime  # 更新最后修改时间
 
         self.rules.clear()  # 清空现有规则列表
-        self.replaces.clear()  # 清空现有替换规则列表
 
         with open(self.file, encoding="utf8") as f:  # 以UTF-8编码打开规则文件
             for line in f:  # 逐行读取文件
@@ -140,12 +144,6 @@ class RuleEngine:
 
                 if not line or line.startswith("#"):  # 如果是空行或注释行
                     continue  # 跳过
-
-                if line.startswith("replace:"):  # 如果是替换规则行
-                    self.replaces.append(
-                        line.split(":", 1)[1]
-                    )  # 提取替换模式并添加到列表
-                    continue
 
                 cond = {}  # 创建条件字典
 
@@ -155,29 +153,34 @@ class RuleEngine:
                     if ":" not in p:  # 如果不包含冒号
                         continue  # 跳过
 
-                    k, v = p.split(":", 1)  # 以冒号分割键值对
+                    k, v = p.lower().split(":", 1)  # 先将键值对转换为小写，再以冒号分割键值对
 
                     k = k.strip()  # 去除键的首尾空白字符
                     v = v.strip()  # 去除值的首尾空白字符
+
+                    if k == "replace":  # 如果是替换规则字段
+                        self.replaces.append(v)  # 添加到替换规则列表
+                        continue
 
                     if k in ("min_size", "max_size"):  # 如果是大小相关字段
                         v = parse_size(v)  # 解析大小字符串
 
                     if k == "ext":  # 如果是扩展名字段
-                        v = [
-                            x.strip() for x in v.split(",")
-                        ]  # 以逗号分割并去除空白字符
+                        v = [x.strip() for x in v.split(",")]  # 以逗号分割并去除空白字符
 
                     if k == "filename":  # 如果是文件名字段
-                        v = [
-                            x.strip() for x in v.split(",")
-                        ]  # 以逗号分割并去除空白字符
+                        v = [x.strip() for x in v.split(",")]  # 以逗号分割并去除空白字符
 
                     cond[k] = v  # 添加到条件字典
+                    # logger.debug(f"rule: {cond}加入规则列表 ")
 
-                self.rules.append(Rule(cond))  # 创建规则对象并添加到规则列表
+                    # 创建规则对象并添加到规则列表，加入原始规则文本
+                    # self.rules.append(Rule(cond))
+                    self.rules.append(Rule(cond, raw=line))
 
-        logger.info(f"rules loaded: {len(self.rules)}")  # 记录已加载的规则数量
+        logger.info(
+            f"共加载 {len(self.rules)} 条取消下载的规则，和 {len(self.replaces)} 条重命名规则"
+        )  # 记录已加载的规则数量
 
     def match(self, file):
         """
@@ -195,21 +198,92 @@ class RuleEngine:
 
         return False  # 所有规则都不匹配则返回False
 
-    def rename(self, name):
+    def rename(self, file_path: str, is_folder=False) -> str:
         """
-        根据替换规则重命名文件名
+        根据通配符替换规则重命名 BT 种子文件路径中的文件名
+        只修改文件名，保留目录结构
 
         参数:
-            name (str): 原始文件名
-
+            file_path (str): BT 文件完整路径（可能包含多级目录）
+            is_folder (bool, optional): 是否是文件夹名，默认为False
         返回:
-            str: 重命名后的文件名
+            str: 重命名后的完整路径
         """
-        new = name  # 初始新名称等于原名称
+        if is_folder:  # 如果是文件夹名
+            new_name = file_path
 
-        for r in self.replaces:  # 遍历所有替换规则
-            new = re.sub(
-                r, "", new, flags=re.I
-            )  # 使用正则表达式替换匹配的部分为空字符串（不区分大小写）
+        else:  #如果是文件路径
+            dir_path, filename = os.path.split(file_path)  # 分离目录和文件名
+            name, ext = os.path.splitext(filename)  # 分离文件名和扩展名
+            new_name = name
 
-        return sanitize_name(new)  # 清理并返回新名称
+        for pattern in self.replaces:
+            new_name = remove_by_match(new_name, pattern)  # 根据通配符模式删除匹配内容
+
+        if is_folder:  # 如果是文件夹名
+            new_name = sanitize_name(new_name)
+            return new_name  # 直接返回文件夹名
+
+        else:  # 如果是文件路径
+            new_name = sanitize_name(new_name) + ext  # 拼回扩展名并清理
+            return os.path.join(dir_path, new_name)  # 拼回原目录
+
+    def debug_match(self, file):
+        """
+        调试规则匹配
+        打印匹配到的规则
+        
+        参数:
+            file (File): 要测试匹配的文件对象
+        """
+        matched = False  # 标记是否有规则匹配
+
+        # 遍历所有规则，检查是否匹配给定文件
+        for i, r in enumerate(self.rules, 1):  # 使用enumerate为规则编号（从1开始）
+            if r.match(file):  # 检查当前规则是否匹配文件
+                logger.info(f"匹配第{i}行的规则（除去注释）: {r.raw}")  # 记录匹配成功的规则编号和原始规则内容
+                matched = True  # 设置匹配标记为True
+
+        if not matched:  # 如果没有任何规则匹配
+            logger.info("没有任何规则匹配")  # 记录未匹配任何规则的信息
+
+
+# 创建一个模拟的raw对象，具有File类期望的属性
+class MockRaw:
+
+    def __init__(self, name, size):
+        self.index = 0  # 假设索引为0
+        self.name = name
+        self.size = size
+        self.priority = 1  # 假设优先级为1（正常下载）
+
+
+# 创建一个模拟的torrent对象
+class MockTorrent:
+
+    def __init__(self):
+        self.hash = "mock_hash"
+        self.name = "mock_torrent"
+
+
+if __name__ == "__main__":
+
+    # 创建规则引擎对象
+    engine = RuleEngine("rules.txt")
+    engine.load()
+    #测试文件名替换规则
+
+    new_name = engine.rename(
+        "【ai增强】edmosaicedea-567肉欲色女孩喜欢吃大gg跟精液，插入后爽到翻白眼！5p无码性爱影片mia4k60帧增强版/489155.com@【AI增强】EDMosaicEDEA-567肉欲色女孩喜欢吃大GG跟精液，插入后爽到翻白眼！5P无码性爱影片Mia4K60帧增强版.mp4"
+    )
+    print(new_name)
+
+    # #测试取消下载规则
+    # #  创建模拟对象
+    # from qb_utils import File
+    # raw_obj = MockRaw("Movie.2024.CC.mp4", parse_size("100MB"))
+    # torrent_obj = MockTorrent()
+
+    # f = File(torrent_obj, raw_obj)
+
+    # engine.debug_match(f)

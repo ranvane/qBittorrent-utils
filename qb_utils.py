@@ -5,28 +5,73 @@ import pathlib
 
 def parse_size(size):
     """
-    解析大小字符串并转换为字节数
+    将带单位的大小字符串解析为字节数（bytes）
+
+    支持格式示例：
+        100        -> 100 bytes
+        10K / 10KB -> 10 * 1024
+        5M / 5MB   -> 5 * 1024^2
+        2G / 2GB   -> 2 * 1024^3
+        1.5G       -> 1.5 * 1024^3
 
     参数:
-        size (str): 包含单位的大小字符串，例如 '10M', '5G', '2K'
+        size (str | int | float)
+            文件大小字符串或数字。
+            可以包含单位 K/M/G/T，也可以不带单位。
 
     返回:
-        int: 对应的字节数
+        int
+            对应的字节数
+
+    异常:
+        ValueError
+            当输入格式非法时抛出
     """
-    size = size.upper()  # 转换为大写以便统一处理
 
-    if size.endswith("K"):  # 如果单位是KB
-        return int(size[:-1]) * 1024  # 移除单位字符并乘以1024得到字节数
+    # 如果已经是数字（例如程序内部直接传入字节数）
+    # 直接转换为 int 返回
+    if isinstance(size, (int, float)):
+        return int(size)
 
-    if size.endswith("M"):  # 如果单位是MB
-        return int(size[:-1]) * 1024 * 1024  # 移除单位字符并乘以1024*1024得到字节数
+    # 去除字符串前后空白字符并统一为大写
+    # 这样可以兼容 "10m", "10MB", " 5g "
+    size = size.strip().upper()
 
-    if size.endswith("G"):  # 如果单位是GB
-        return (
-            int(size[:-1]) * 1024 * 1024 * 1024
-        )  # 移除单位字符并乘以1024*1024*1024得到字节数
+    # 使用正则表达式解析：
+    # (\d+(?:\.\d+)?)   匹配整数或小数，例如 10 或 1.5
+    # ([KMGT]?B?)       匹配单位，例如 K / KB / M / MB
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGT]?B?)", size)
 
-    return int(size)  # 如果没有单位，则直接返回数字部分
+    # 如果正则匹配失败，说明字符串格式非法
+    if not match:
+        raise ValueError(f"Invalid size format: {size}")
+
+    # 提取数值部分
+    number = float(match.group(1))
+
+    # 提取单位部分
+    unit = match.group(2)
+
+    # 定义单位对应的字节倍数
+    # 使用 1024 体系（文件系统标准）
+    unit_table = {
+        "": 1,  # 无单位 -> bytes
+        "B": 1,
+        "K": 1024,
+        "KB": 1024,
+        "M": 1024**2,
+        "MB": 1024**2,
+        "G": 1024**3,
+        "GB": 1024**3,
+        "T": 1024**4,
+        "TB": 1024**4,
+    }
+
+    # 计算字节数
+    bytes_size = number * unit_table[unit]
+
+    # 返回整数形式
+    return int(bytes_size)
 
 
 def sanitize_name(name):
@@ -108,7 +153,7 @@ class File:
         self.torrent = torrent  # 关联的种子对象
 
         self.id = raw.index  # 文件在种子中的索引号
-        self.name = raw.name  # 文件名
+        self.name = raw.name.strip()  # 文件名
         self.size = raw.size  # 文件大小（字节）
         self.priority = raw.priority  # 文件下载优先级
 
@@ -164,23 +209,24 @@ def choose_best_name(engine, torrent, files):
     candidates = []  # 存储候选名称的列表
 
     # 添加种子本身的名称作为候选
-    candidates.append(engine.rename(torrent.name))
+    torrent_name = engine.rename(torrent.name, is_folder=True)
+    candidates.append(engine.rename(torrent_name))
 
     # 获取顶级文件夹名称，如果存在则也作为候选
     folder = get_top_folder(files)
+
     if folder:
-        candidates.append(engine.rename(folder))
+        candidates.append(engine.rename(folder, is_folder=True))
 
     # # 找到最大的文件，并将其文件名（不含扩展名）作为候选
     # largest = max(files, key=lambda x: x.size)  # 找到尺寸最大的文件
     # name = extract_filename_noext(largest.name)  # 提取最大文件的文件名（不含扩展名）
     # candidates.append(engine.rename(name))
     # 找到最大的文件，并将其文件名（不含扩展名）作为候选
+
     if files:  # 检查文件列表是否非空
         largest = max(files, key=lambda x: x.size)  # 找到尺寸最大的文件
-        name = extract_filename_noext(
-            largest.name
-        )  # 提取最大文件的文件名（不含扩展名）
+        name = extract_filename_noext(largest.name)  # 提取最大文件的文件名（不含扩展名）
         candidates.append(engine.rename(name))
 
     best = ""  # 最佳名称
@@ -200,3 +246,33 @@ def choose_best_name(engine, torrent, files):
             score = s  # 更新最高分数
 
     return best  # 返回包含最多中文字符的最佳名称
+
+
+def remove_by_match(text: str, pattern: str) -> str:
+    """
+    根据通配符模式删除文本中的匹配内容
+    通配符规则：
+        * 表示任意字符（可贪婪匹配）
+    
+    参数:
+        text (str): 原文本
+        pattern (str): 通配符模式，例如 "@*", "*@", "【*】"
+    
+    返回:
+        str: 删除匹配后的文本
+    """
+    # 将通配符 * 转成正则表达式 .*，其他字符转义
+    # print(f"使用通配符: {pattern}")
+    regex_pattern = ''
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == '*':
+            # regex_pattern += '.*'   # 贪婪匹配
+            regex_pattern += '.*?'  # 非贪婪匹配
+            i += 1
+        else:
+            regex_pattern += re.escape(pattern[i])
+            i += 1
+
+    # 使用 re.sub 删除匹配内容
+    return re.sub(regex_pattern, '', text, flags=re.DOTALL)

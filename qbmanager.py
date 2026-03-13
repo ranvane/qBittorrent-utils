@@ -67,11 +67,17 @@ class CancelDownload(Action):
             return
 
         # 调用qBittorrent API，将指定文件的下载优先级设置为0（不下载）
-        client.torrents_file_priority(
-            torrent_hash=self.hash, file_ids=self.ids, priority=0
-        )
-        # 记录实际执行的操作
-        logger.info(f"{self.torrent.name} 取消下载 {self.ids}")
+        try:
+            client.torrents_file_priority(torrent_hash=self.hash,
+                                          file_ids=self.ids,
+                                          priority=0)
+            # 记录实际执行的操作
+            logger.info(
+                f"取消下载：{self.torrent.name} -> 共{len(self.ids)}文件，文件ID：{self.ids}"
+            )
+
+        except Exception as e:
+            logger.error(f"取消下载 {self.ids} 失败，{e}")
 
 
 class RenameFile(Action):
@@ -104,16 +110,21 @@ class RenameFile(Action):
         """
         if CONFIG["dry_run"]:  # 如果是模拟运行模式
             logger.info(
-                f"[DRY] rename file {self.old} -> {self.new}"
-            )  # 记录将要执行的操作
+                f"[DRY] rename file {self.old} -> {self.new}")  # 记录将要执行的操作
             return
 
         # 调用qBittorrent API，重命名种子中的文件
-        client.torrents_rename_file(
-            torrent_hash=self.hash, old_path=self.old, new_path=self.new
-        )
-        # 记录实际执行的操作
-        logger.info(f"重命名文件 {self.torrent.name} : {self.old} -> {self.new}")
+        try:
+            client.torrents_rename_file(torrent_hash=self.hash,
+                                        old_path=self.old,
+                                        new_path=self.new)
+
+            # 记录实际执行的操作
+            logger.info(
+                f"重命名文件 {self.torrent.name} : {self.old} -> {self.new}")
+        except Exception as e:
+            logger.error(f"重命名文件 {self.old} -> {self.new} 失败，{e}")
+            return
 
 
 class RenameTorrent(Action):
@@ -143,13 +154,16 @@ class RenameTorrent(Action):
         """
         if CONFIG["dry_run"]:  # 如果是模拟运行模式
             logger.info(
-                f"[DRY] rename torrent -> {self.new_name}"
-            )  # 记录将要执行的操作
+                f"[DRY] rename torrent -> {self.new_name}")  # 记录将要执行的操作
             return
 
         # 调用qBittorrent API，重命名种子
-        client.torrents_rename(self.hash, self.new_name)
-        logger.info(f"重命名种子 {self.torrent.name} -> {self.new_name}")
+        try:
+            client.torrents_rename(self.hash, self.new_name)
+            logger.info(f"重命名种子 {self.torrent.name} -> {self.new_name}")
+        except Exception as e:
+            logger.error(
+                f"重命名种子 {self.torrent.name} -> {self.new_name} 失败，{e}")
 
 
 class RenameFolder(Action):
@@ -175,22 +189,30 @@ class RenameFolder(Action):
     def execute(self, client):
         """
         执行重命名文件夹操作
-
+        
         参数:
             client: qBittorrent客户端实例
         """
+        # 检查新名称是否有效（非空）
+        if not self.new or not self.new.strip():
+            logger.warning(f"无法重命名文件夹 '{self.old}'，新名称为空或仅包含空白字符")
+            return
+
         if CONFIG["dry_run"]:  # 如果是模拟运行模式
             logger.info(
-                f"[DRY] rename folder {self.old} -> {self.new}"
-            )  # 记录将要执行的操作
+                f"[DRY] rename folder {self.old} -> {self.new}")  # 记录将要执行的操作
             return
 
         # 调用qBittorrent API，重命名种子中的文件夹
-        client.torrents_rename_folder(
-            torrent_hash=self.hash, old_path=self.old, new_path=self.new
-        )
-        # 记录实际执行的操作
-        logger.info(f"重命名文件夹 {self.torrent.name} : {self.old} -> {self.new}")
+        try:
+            client.torrents_rename_folder(torrent_hash=self.hash,
+                                          old_path=self.old,
+                                          new_path=self.new)
+            # 记录实际执行的操作
+            logger.info(
+                f"重命名文件夹 {self.torrent.name} : {self.old} -> {self.new}")
+        except Exception as e:
+            logger.error(f"重命名文件夹 {self.old} -> {self.new} 失败，{e}")
 
 
 class QBController:
@@ -232,8 +254,7 @@ class QBController:
             torrent = Torrent(t)  # 创建Torrent对象
 
             files = self.client.torrents_files(
-                torrent_hash=t.hash
-            )  # 获取种子的所有文件
+                torrent_hash=t.hash)  # 获取种子的所有文件
 
             yield torrent, files  # 生成种子和文件的元组
 
@@ -272,35 +293,53 @@ class Manager:
 
                     if file.priority == 0:  # 如果文件优先级为0（不下载）
                         continue  # 跳过
+                    # --------------------文件重命名操作------------------------------
+                    new = self.engine.rename(file.name)  # 获取重命名后的文件名
+                    if new != file.name:  # 如果重命名后名称发生变化
+                        # 执行文件重命名操作
+                        RenameFile(torrent, file.name,
+                                   new).execute(self.qb.client)
 
                     if self.engine.match(file):  # 如果文件匹配规则
                         cancel_ids.append(file.id)  # 将文件ID添加到取消列表
 
-                    new = self.engine.rename(file.name)  # 获取重命名后的文件名
+                # --------------------种子重命名------------------------------
+                best_name = choose_best_name(self.engine, torrent,
+                                             files)  # 选择最佳种子名称
 
-                    if new != file.name:  # 如果重命名后名称发生变化
-                        # 执行文件重命名操作
-                        RenameFile(torrent, file.name, new).execute(self.qb.client)
-
-                if cancel_ids:  # 如果有需要取消下载的文件
-                    # 执行取消下载操作
-                    CancelDownload(torrent, cancel_ids).execute(self.qb.client)
-
-                best_name = choose_best_name(
-                    self.engine, torrent, files
-                )  # 选择最佳种子名称
-
-                if (
-                    best_name and best_name != torrent.name
-                ):  # 如果最佳名称与当前名称不同
+                if (best_name and best_name != torrent.name):  # 如果最佳名称与当前名称不同
                     # 执行种子重命名操作
                     RenameTorrent(torrent, best_name).execute(self.qb.client)
 
+                # --------------------重命名文件夹------------------------------
                 folder = get_top_folder(files)  # 获取顶级文件夹名称
-
-                if folder and folder != best_name:  # 如果顶级文件夹存在且与最佳名称不同
-                    # 执行文件夹重命名操作
-                    RenameFolder(torrent, folder, best_name).execute(self.qb.client)
+                if folder:  # 先检查顶级文件夹是否存在（基础前提）
+                    # 检查最佳名称是否有效（非空、非空白字符）
+                    if not best_name or best_name.strip() == "":
+                        pass
+                    elif folder == best_name:
+                        pass
+                    else:
+                        # 所有条件满足，执行重命名
+                        try:
+                            RenameFolder(torrent, folder,
+                                         best_name).execute(self.qb.client)
+                            logger.info(
+                                f"[RenameFolder]文件夹重命名成功：{folder} -> {best_name}"
+                            )
+                        except Exception as e:
+                            # 捕获重命名执行过程中的异常，增强容错性
+                            logger.error(
+                                f"[RenameFolder]文件夹重命名执行失败：{folder} -> {best_name}，错误：{str(e)}"
+                            )
+                else:
+                    logger.info(
+                        f"[RenameFolder]文件夹重命名失败：未找到顶级文件夹（最佳名称：{best_name or '空'}）"
+                    )
+                # --------------------取消下载------------------------------
+                if cancel_ids:  # 如果有需要取消下载的文件
+                    # 执行取消下载操作
+                    CancelDownload(torrent, cancel_ids).execute(self.qb.client)
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
