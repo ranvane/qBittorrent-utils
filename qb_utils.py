@@ -1,21 +1,15 @@
 import os
 import re
-import fnmatch
-import time
-import traceback
 import pathlib
-
-import qbittorrentapi
-from loguru import logger
 
 
 def parse_size(size):
     """
     解析大小字符串并转换为字节数
-    
+
     参数:
         size (str): 包含单位的大小字符串，例如 '10M', '5G', '2K'
-        
+
     返回:
         int: 对应的字节数
     """
@@ -28,8 +22,9 @@ def parse_size(size):
         return int(size[:-1]) * 1024 * 1024  # 移除单位字符并乘以1024*1024得到字节数
 
     if size.endswith("G"):  # 如果单位是GB
-        return int(
-            size[:-1]) * 1024 * 1024 * 1024  # 移除单位字符并乘以1024*1024*1024得到字节数
+        return (
+            int(size[:-1]) * 1024 * 1024 * 1024
+        )  # 移除单位字符并乘以1024*1024*1024得到字节数
 
     return int(size)  # 如果没有单位，则直接返回数字部分
 
@@ -37,10 +32,10 @@ def parse_size(size):
 def sanitize_name(name):
     """
     清理文件名，移除多余空格并进行标准化处理
-    
+
     参数:
         name (str): 原始文件名
-        
+
     返回:
         str: 清理后的文件名
     """
@@ -53,23 +48,23 @@ def sanitize_name(name):
 def chinese_count(text):
     """
     统计文本中中文字符的数量
-    
+
     参数:
         text (str): 要统计的文本
-        
+
     返回:
         int: 文本中中文字符的数量
     """
-    return len(re.findall(r'[\u4e00-\u9fff]', text))
+    return len(re.findall(r"[\u4e00-\u9fff]", text))
 
 
 def extract_filename_noext(name):
     """
     从完整文件路径中提取不带扩展名的文件名
-    
+
     参数:
         name (str): 完整的文件路径
-        
+
     返回:
         str: 不包含扩展名的文件名
     """
@@ -80,10 +75,10 @@ def extract_filename_noext(name):
 def get_top_folder(files):
     """
     从文件列表中获取顶级文件夹名称
-    
+
     参数:
         files: 包含文件对象的列表，每个文件对象有name属性表示文件路径
-        
+
     返回:
         str or None: 如果存在顶级文件夹则返回其名称，否则返回None
     """
@@ -105,7 +100,7 @@ class File:
     def __init__(self, torrent, raw):
         """
         初始化File对象
-        
+
         参数:
             torrent: 关联的Torrent对象
             raw: 来自qBittorrent API的原始文件数据对象
@@ -128,7 +123,7 @@ class Torrent:
     def __init__(self, raw):
         """
         初始化Torrent对象
-        
+
         参数:
             raw: 来自qBittorrent API的原始种子数据对象
         """
@@ -146,7 +141,7 @@ class Action:
         """
         执行操作的方法
         子类需要重写此方法来实现具体的操作逻辑
-        
+
         参数:
             client: qBittorrent客户端实例
         """
@@ -157,12 +152,12 @@ def choose_best_name(engine, torrent, files):
     """
     从多种候选名称中选择最佳的种子名称
     优先选择包含最多中文字符的名称
-    
+
     参数:
         engine (RuleEngine): 规则引擎实例
         torrent (Torrent): 种子对象
         files: 文件列表
-        
+
     返回:
         str: 最佳的种子名称
     """
@@ -183,7 +178,9 @@ def choose_best_name(engine, torrent, files):
     # 找到最大的文件，并将其文件名（不含扩展名）作为候选
     if files:  # 检查文件列表是否非空
         largest = max(files, key=lambda x: x.size)  # 找到尺寸最大的文件
-        name = extract_filename_noext(largest.name)  # 提取最大文件的文件名（不含扩展名）
+        name = extract_filename_noext(
+            largest.name
+        )  # 提取最大文件的文件名（不含扩展名）
         candidates.append(engine.rename(name))
 
     best = ""  # 最佳名称
