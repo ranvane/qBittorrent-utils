@@ -16,19 +16,22 @@ import traceback
 
 import qbittorrentapi
 from loguru import logger
+from pathlib import Path
 
 from qb_utils import get_top_folder, File, Torrent, Action, choose_best_name
 from RuleEngine_utils import RuleEngine
+
+BASE_DIR = Path(__file__).resolve().parent
 
 CONFIG = {
     "host": "192.168.10.200",
     "port": 8080,
     "username": "ranvane",
     "password": "fjgh1148028",
-    "rule_file": "rules.txt",
+    "rule_file": BASE_DIR / "rules.txt",
     "scan_interval": 10,
     "dry_run": False,
-    "log_file": "qbmanager.log",
+    "log_file": BASE_DIR / "qbmanager.log",
 }
 
 # logger.remove()

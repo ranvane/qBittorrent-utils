@@ -42,7 +42,7 @@ class Condition:
                 for p in self.filename:  # 遍历所有文件名匹配模式
                     if fnmatch.fnmatch(file.name.lower(),
                                        p):  # 先将文件名转换为小写，再使用shell风格通配符匹配文件名
-                        logger.debug(f"匹配文件名规则: {file.name}")
+                        logger.debug(f"匹配文件名规则: {file.name} -> {p}")
                         return True
 
             if self.ext:  # 如果设置了扩展名匹配条件
@@ -127,7 +127,19 @@ class RuleEngine:
         """
         if not os.path.exists(self.file):  # 如果规则文件不存在
             with open(self.file, "w", encoding="utf8") as f:  # 创建并写入默认内容
-                f.write("# rules\n")
+                f.write('''#******************规则说明***************************
+# 匹配以下条件的文件将被取消下载（不下载）
+# 
+# max_size:X  - 取消下载大小大于X的文件（如max_size:10M表示取消下载大于10MB的文件）
+# min_size:X  - 取消下载大小小于X的文件（如min_size:10M表示取消下载小于10MB的文件）
+# filename:X  - 取消下载文件名匹配模式X的文件（支持通配符，如filename:*.txt）
+# ext:X       - 取消下载指定扩展名的文件（如ext:.mp4表示取消下载MP4文件）
+# replace:X   - 删除文件夹和文件名中的字符串
+# 
+# 多个条件可以用分号分隔，如：ext:.mkv;min_size:500M，取消下载只要满足其中任意一个条件
+# 表示取消下载扩展名为.mkv且大小小于500MB的文件
+#***************************************************
+''')
 
         mtime = os.path.getmtime(self.file)  # 获取文件最后修改时间
 
