@@ -1,0 +1,66 @@
+#******************规则说明***************************
+# 匹配以下条件的文件将被取消下载（不下载）
+# 
+# max_size:X  - 取消下载大小大于X的文件（如max_size:10M表示取消下载大于10MB的文件）
+# min_size:X  - 取消下载大小小于X的文件（如min_size:10M表示取消下载小于10MB的文件）
+# filename:X  - 取消下载文件名匹配模式X的文件（支持通配符，如filename:*.txt）
+# ext:X       - 取消下载指定扩展名的文件（如ext:.mp4表示取消下载MP4文件）
+# replace:X   - 删除文件夹和文件名中的字符串
+# 
+# 多个条件可以用分号分隔，如：ext:.mkv;min_size:500M，取消下载只要满足其中任意一个条件
+# 表示取消下载扩展名为.mkv且大小小于500MB的文件
+#***************************************************
+
+# 替换文件夹和文件名中的字符（如replace:【*】表示删除文件夹和文件名中的【*】）
+replace:【*】;replace:(*);replace:【*】;replace:*com@;replace:*【*】;replace:*com-;replace:*vip@;replace:*vip-
+replace:[*];replace:ReducingMosaic;replace:✨;replace:【S级泄密】
+
+# 取消下载指定扩展名的文件（如ext:.mp4表示取消下载MP4文件）
+ext:.url;ext:.htm;ext:.html;ext:.gif;ext:.rar;ext:.zip;ext:.7z;ext:.chm;ext:.apk;ext:.mhtml;ext:.mht;ext:.txt;ext:.pptx;ext:.pdf
+filename:*av美女直播*;filename:*乱伦社区*;filename:*線上觀看*;filename:*發布*;filename:*腾讯涩漫*;filename:*换妻乱伦*;filename:*乱伦换妻*;filename:*亂倫換妻*;filename:*蜜桃影像传媒.png*
+filename:*❤.png*;filename:*❤.jpg*;filename:*com.mp4*;filename:*cc.mp4;filename:*成人社区*;filename:*獵豔傳奇*;filename:*猎艳传奇*;filename:*斗罗大陆*;filename:*外网天堂*;filename:*速波网*
+filename:*最新资讯*;filename:*JavLand*;filename:*王子能拯救她解放她.mp4*;filename:*任君選妃.mp4*;filename:*精爆骑*;filename:*更多游戏*;filename:*微密圈*;filename:*cc.mp4;filename:*经典品牌*
+filename:*品茶*;filename:*国内中转*;filename:*bat;filename:*性福源泉*;filename:*91毛片*;filename:*XVIDEO*;filename:*抖阴*;filename:*真实认证*;filename:*揭开神秘*;filename:*感兴趣的*
+filename:*_好色*;filename:*_51动漫*;filename:*稀缺视频*;filename:*51本色*;filename:*麻豆传媒*;filename:*蚂蚁翻墙*;filename:*鬼父猥亵*;filename:*成人版*;filename:*成人游戏*;filename:*论坛文*
+filename:*上美女聊天*;filename:*记录美好*.jpg;filename:*记录美好*.png;filename:*记录美好*.gif;filename:*每日更新*.jpg;filename:*每日更新*.png;filename:*每日更新*.gif;filename:*百万*.jpg
+filename:*百万*.png;filename:*百万*.gif;filename:*顶级AI*;filename:*AI科技*.jpg;filename:*AI科技*.png;filename:*AI科技*.gif;filename:*精品片库*;filename:*百万重口*;filename:*百万精品*;
+filename:*母狗园*;filename:*性爱记录*;filename:*技术一流.png;filename:*我们不生产母狗*;filename:*全球最大*;filename:*_91*;filename:*爭霸江山美人*;filename:*度灰*;filename:*帝王恩宠*;filename:*H漫*;
+filename:*H動漫.mp4;filename:*AI色色*;filename:*工作室*;filename:*三国*志*;filename:*三國*志*;filename:*私房猛药*;filename:*❤麻豆传媒映画❤*;filename:*成人抖音*;filename:*全国外围*;filename:*国产精品资源*;
+filename:*.mp4.jpg;filename:*草榴*;filename:*萌妹屋*;filename:*极乐禁地*;filename:*金三角*;filename:*二维码*;filename:*扫码*;filename:*品茶;filename:*微密圈;filename:*蚂蚁翻墙;filename:*记录美好性生活;
+filename:*交友;filename:*猪仔生活;filename:*本色;filename:*好色;filename:*不断更;filename:*世界;filename:*同步更新;filename:*国产资源库*;filename:*全网解密*;filename:*全网唯一*;
+filename:*全网最新*;filename:*_图灵传媒*;filename:*重新定义*;filename:*新番更不停*;filename:*献妻虎狼熟女*;filename:*聚集中心*;filename:*百万部*;filename:*来自糖心*;filename:*老王社区*;
+filename:*_乱伦社区*;filename:*妻友*;filename:*广告*;filename:*暗香阁*;filename:*黑料社*;filename:*91短视频*;filename:*使用方法*;filename:*番號大全*;filename:*在线播放*;filename:*磁力*;
+filename:*挑战自我*释放天性*;filename:*发布*jpg;filename:*窥视TV*;filename:*麻豆传媒破解*;filename:*外网禁忌*;filename:*_TikTok成人版*;filename:*宣傳文檔*;filename:*成人.{0,1}游*;
+filename:*_快手社区*;filename:*_暗网*;filename:*_海角乱伦*;filename:*在线影城*;filename:*内涵AV*;filename:*汇聚全球*;filename:*缅北禁地*;filename:*_?暗网解密*;filename:*_欲漫涩*;filename:*视频资源*;
+filename:*_AI色色*;filename:*91制片厂*;filename:*_bilibili*;filename:*_糖心*;filename:*_杏吧*;filename:*下载*;filename:*BETANO*;filename:*__哔咔*;filename:*AI处理技术*;
+filename:*2048*社区*;filename:*2048*社區*;filename:*美女直播*;filename:*直播*推荐*mp4;filename:*逼哩*;filename:*直播大秀*mp4;filename:*激情隨時看*mp4;filename:*荷官*mp4;filename:*N房间*mp4;
+filename:*★★★*;filename:*狗仔视频*;filename:*人间尤物.mp4;filename:*注册*;filename:*fun.*mp4;filename:*《★*》*;filename:*社*区*报.mp4;filename:* H*漫*;filename:*凤凰娱乐*mp4;filename:*成人版*mp4;
+filename:*-重磅核弹国产*;filename:*最新地址*;filename:*成人18禁游*;filename:*星空天使*;filename:*污漫*;filename:*九游*;filename:*手游*;filename:*小舞*;filename:*VPN*;filename:*色中色*;
+filename:*约炮平台;filename:*入有*;filename:*同城*;filename:*工口*;filename:*QRCODE*;filename:*含羞草*;filename:*俱樂部*;filename:*積分*;filename:*註冊*;filename:*悠亞陪玩*;filename:*遊戲*;
+filename:*宝可梦*;filename:*次元穿越*;filename:*科技档案*;filename:u*a*.LA*;filename:*全网第一吃瓜网*;filename:*二維碼*;filename:*人遊戲*;filename:*人游戏*;filename:*bilibili*;filename:*花*式*表*演;
+filename:*三国志*;filename:*如果您看到此文件*;filename:*服务全球*;filename:*AI生成視頻*;filename:*加强版*;filename:*点击进入*;filename:*色情*游戏*;filename:*吃瓜爆料免费观看*;filename:*約會神器*;
+filename:*AI*;filename:*籮莉島*;filename:*萝莉岛*;filename:*熱搜資訊*;filename:*成人游戲*;filename:*｜.jpg;filename:*｜.png;filename:*获取地址.*;filename:*网址*;filename:*楼凤信息 *;
+filename:*小藍*;filename:*成人快手*;filename:*好色先生.*;filename:*soul.*;filename:*tiktok.*;filename:*pornhub.*;filename:*推特中文版*;filename:*Soul猎艳*;filename:*片源*;filename:*萝莉岛揭秘*;
+filename:*多元话题*;filename:*小蓝俱乐部*;filename:*揭秘全球名流*;filename:*色轮眼*;filename:*茶馆儿全国*;filename:*分享基地*;filename:*大小乔的诱惑*;filename:*PORNHUB中文版*;filename:*91porn.PNG*;
+filename:*楼凤*;filename:*海角乱伦.PNG*;filename:*换脸视频.mp4*;filename:*社区*;filename:*AI脱衣*;filename:*桃子视频*;filename:*福利基地*;filename:*暗网ai*;filename:*-爱姬远征*;filename:*精爆騎姬*;
+filename:*AI视频换脸*AI脱衣*;filename:*全国楼凤*;filename:*__栗子视频*;filename:*全网优质成人资源*;filename:*天天更新*;filename:*小时不断更*;filename:*一键脱衣*;
+filename:*AI换脸*;filename:*AI视频换脸*;filename:*福利导航*;filename:*美乳*绝色诱人的身体肥臀*;filename:*線*上*現*場*直*播*各*式;filename:*花*式*表*演*;filename:*社*區*最*新*情*報*;
+filename:*gif.mp4*;filename:*註解.*;filename:*91重口*;filename:*淫荡猫*;filename:*收集全球*;filename:*调教暗网流出*;filename:*春药迷奸*;filename:*几十位小姐姐被封号集锦*;filename:*__缅北禁地*;filename:*资源中心*;
+filename:*游戏大全*.mp4*
+
+min_size:5M;
+
+# 小于10MB取消下载
+#min_size:10M;
+
+# 大于10MB取消下载
+#max_size:5000M
+
+# sample文件取消下载
+filename:*sample*
+
+# mkv必须大于500MB
+#ext:.mkv;min_size:500M
+
+# 大于1GB才下载
+# min_size:1G
