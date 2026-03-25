@@ -599,6 +599,7 @@ def main():
     
     # 更新所有种子的tracker列表
     update_trackers(manager.qb)
+    # clear_all_trackers(manager.qb)
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
