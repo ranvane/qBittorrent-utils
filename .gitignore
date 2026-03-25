@@ -1,3 +1,4 @@
 /qb-web
 /__pycache__
 /__pycache__/*
+.trackers_cache

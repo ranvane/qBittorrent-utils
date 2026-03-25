@@ -26,7 +26,7 @@ from RuleEngine_utils import RuleEngine
 
 
 def get_external_trackers(
-    url="https://ngosang.github.io/trackerslist/trackers_all.txt", 
+    url="https://ngosang.github.io/trackerslist/trackers_best.txt", 
     cache_file=".trackers_cache", 
     cache_duration=3600
 ):
@@ -400,6 +400,45 @@ class QBController:
             logger.error(f"向种子 {torrent_hash} 添加tracker失败: {e}")
 
 
+def update_trackers(qb_controller):
+    """
+    更新所有种子的tracker列表
+    获取外部tracker列表，合并现有tracker，并去重添加到各种子
+
+    参数:
+        qb_controller (QBController): QBController实例
+    """
+    qb_controller.connect()  # 连接到qBittorrent服务器
+    
+    # 获取外部tracker列表（带缓存）
+    external_trackers = get_external_trackers()
+    if not external_trackers:
+        logger.warning("未能获取到任何外部tracker")
+        return
+
+    # 获取所有种子
+    torrents = qb_controller.client.torrents_info()
+    
+    # 获取所有现有tracker并去重
+    all_existing_trackers = set()
+    for torrent in torrents:
+        current_trackers = qb_controller.get_torrent_trackers(torrent.hash)
+        all_existing_trackers.update(current_trackers)
+    
+    # 合并现有tracker和外部tracker并去重
+    final_trackers = list(set(list(all_existing_trackers) + external_trackers))
+    logger.info(f"Tracker列表长度: {len(final_trackers)}")
+    
+    # 将合并后的tracker列表添加到每个种子
+    for torrent in torrents:
+        try:
+            # 添加合并后的tracker到种子
+            qb_controller.add_trackers_to_torrent(torrent.hash, final_trackers)
+            
+        except Exception as e:
+            logger.error(f"更新种子 {torrent.hash} 的tracker时出错: {e}")
+
+
 # 在QBController类后面添加额外的空行
 
 
@@ -492,44 +531,17 @@ class Manager:
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
 
-    def update_trackers(self):
-        """
-        更新所有种子的tracker列表
-        获取外部tracker列表，合并现有tracker，并去重添加到各种子
-        """
-        self.qb.connect()  # 连接到qBittorrent服务器
-        
-        # 获取外部tracker列表（带缓存）
-        external_trackers = get_external_trackers()
-        if not external_trackers:
-            logger.warning("未能获取到任何外部tracker")
-            return
-
-        # 获取所有种子
-        torrents = self.qb.client.torrents_info()
-        
-        for torrent in torrents:
-            try:
-                # 获取当前种子的现有tracker
-                current_trackers = self.qb.get_torrent_trackers(torrent.hash)
-                
-                # 合并tracker列表并去重
-                all_trackers = list(set(current_trackers + external_trackers))
-                
-                # 添加新的tracker到种子
-                self.qb.add_trackers_to_torrent(torrent.hash, all_trackers)
-                
-            except Exception as e:
-                logger.error(f"更新种子 {torrent.hash} 的tracker时出错: {e}")
-
 
 def main():
     """
     主函数
     程序入口点，启动qBittorrent管理器
     """
-    Manager().run()  # 创建管理器实例并运行主循环
-    Manager().update_trackers()  # 更新所有种子的tracker列表
+    manager = Manager()
+    manager.run()  # 创建管理器实例并运行主循环
+    
+    # 更新所有种子的tracker列表
+    update_trackers(manager.qb)
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
