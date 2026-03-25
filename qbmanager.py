@@ -529,6 +529,7 @@ def main():
     程序入口点，启动qBittorrent管理器
     """
     Manager().run()  # 创建管理器实例并运行主循环
+    Manager().update_trackers()  # 更新所有种子的tracker列表
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
