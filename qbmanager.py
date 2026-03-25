@@ -10,15 +10,98 @@ qBittorrent 自动管理器
 4 自动顶层目录重命名
 5 中文字符最多优先作为资源名称
 6 规则热加载
+7 添加tracker列表
 """
 
 import traceback
+import requests
+import os
+import time
 
 import qbittorrentapi
 from loguru import logger
 
 from qb_utils import get_top_folder, File, Torrent, Action, choose_best_name
 from RuleEngine_utils import RuleEngine
+
+
+def get_external_trackers(
+    url="https://ngosang.github.io/trackerslist/trackers_all.txt", 
+    cache_file=".trackers_cache", 
+    cache_duration=3600
+):
+    """
+    从URL获取tracker列表，并使用缓存机制避免频繁请求
+
+    参数:
+        url (str): 获取tracker列表的URL
+        cache_file (str): 缓存文件路径
+        cache_duration (int): 缓存持续时间（秒），默认1小时
+
+    返回:
+        list: tracker URL 列表
+    """
+    # 检查缓存文件是否存在及是否过期
+    if os.path.exists(cache_file):
+        cache_time = os.path.getmtime(cache_file)
+        current_time = time.time()
+        
+        if current_time - cache_time < cache_duration:
+            # 缓存未过期，从缓存文件读取
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    trackers = [line.strip() for line in f if line.strip()]
+                    logger.info(f"从缓存加载了 {len(trackers)} 个tracker")
+                    return trackers
+            except Exception as e:
+                logger.error(f"读取缓存文件失败: {e}")
+    
+    # 缓存不存在或已过期，从网络获取
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # 分割响应内容为行，并过滤空行
+        lines = response.text.splitlines()
+        trackers = [line.strip() for line in lines if line.strip()]
+        
+        # 过滤掉无效的tracker URL
+        valid_trackers = []
+        for tracker in trackers:
+            tracker = tracker.strip()
+            if tracker.startswith(
+                ('http://', 'https://', 'udp://', 'ws://', 'wss://')
+            ):
+                valid_trackers.append(tracker)
+        
+        # 保存到缓存文件
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                for tracker in valid_trackers:
+                    f.write(tracker + '\n')
+            logger.info(f"已更新缓存文件，包含 {len(valid_trackers)} 个tracker")
+        except Exception as e:
+            logger.error(f"写入缓存文件失败: {e}")
+        
+        logger.info(f"从网络获取了 {len(valid_trackers)} 个tracker")
+        return valid_trackers
+    
+    except Exception as e:
+        logger.error(f"获取tracker列表失败: {e}")
+        # 如果网络获取失败，尝试从缓存读取（即使已过期）
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    trackers = [line.strip() for line in f if line.strip()]
+                    logger.info(
+                        f"网络获取失败，从缓存加载了 {len(trackers)} 个tracker"
+                    )
+                    return trackers
+            except Exception as e2:
+                logger.error(f"从缓存读取也失败: {e2}")
+        
+        return []
+
 
 CONFIG = {
     "host": "192.168.10.200",
@@ -73,7 +156,8 @@ class CancelDownload(Action):
                                           priority=0)
             # 记录实际执行的操作
             logger.info(
-                f"取消下载：{self.torrent.name} -> 共{len(self.ids)}文件，文件ID：{self.ids}"
+                f"取消下载：{self.torrent.name} -> 共{len(self.ids)}文件，"
+                f"文件ID：{self.ids}"
             )
 
         except Exception as e:
@@ -258,6 +342,66 @@ class QBController:
 
             yield torrent, files  # 生成种子和文件的元组
 
+    def get_torrent_trackers(self, torrent_hash):
+        """
+        获取指定种子的tracker列表
+
+        参数:
+            torrent_hash (str): 种子的哈希值
+
+        返回:
+            list: tracker URL 列表
+        """
+        try:
+            trackers = self.client.torrents_trackers(torrent_hash=torrent_hash)
+            tracker_urls = []
+            for tracker in trackers:
+                if tracker.url and tracker.url not in tracker_urls:
+                    tracker_urls.append(tracker.url)
+            return tracker_urls
+        except Exception as e:
+            logger.error(f"获取种子 {torrent_hash} 的tracker失败: {e}")
+            return []
+
+    def add_trackers_to_torrent(self, torrent_hash, trackers):
+        """
+        向指定种子添加tracker
+
+        参数:
+            torrent_hash (str): 种子的哈希值
+            trackers (list): 要添加的tracker URL 列表
+        """
+        if not trackers:
+            return
+
+        try:
+            # 获取当前种子的tracker列表
+            current_trackers = self.get_torrent_trackers(torrent_hash)
+            
+            # 过滤掉已经存在的tracker
+            new_trackers = [t for t in trackers if t not in current_trackers]
+            
+            if not new_trackers:
+                logger.info(f"种子 {torrent_hash} 已经拥有所有tracker，无需添加")
+                return
+            
+            # 添加新tracker
+            tracker_string = '\n'.join(new_trackers)
+            self.client.torrents_add_trackers(
+                torrent_hash=torrent_hash,
+                urls=tracker_string
+            )
+            
+            logger.info(
+                f"为种子 {torrent_hash} 添加了 {len(new_trackers)} 个新tracker"
+            )
+            
+        except Exception as e:
+            logger.error(f"向种子 {torrent_hash} 添加tracker失败: {e}")
+
+
+# 在QBController类后面添加额外的空行
+
 
 class Manager:
     """
@@ -307,7 +451,8 @@ class Manager:
                 best_name = choose_best_name(self.engine, torrent,
                                              files)  # 选择最佳种子名称
 
-                if (best_name and best_name != torrent.name):  # 如果最佳名称与当前名称不同
+                if (best_name and best_name != torrent.name):  # 如果最佳名称
+                    # 与当前名称不同
                     # 执行种子重命名操作
                     RenameTorrent(torrent, best_name).execute(self.qb.client)
 
@@ -325,16 +470,19 @@ class Manager:
                             RenameFolder(torrent, folder,
                                          best_name).execute(self.qb.client)
                             logger.info(
-                                f"[RenameFolder]文件夹重命名成功：{folder} -> {best_name}"
+                                f"[RenameFolder]文件夹重命名成功："
+                                f"{folder} -> {best_name}"
                             )
                         except Exception as e:
                             # 捕获重命名执行过程中的异常，增强容错性
                             logger.error(
-                                f"[RenameFolder]文件夹重命名执行失败：{folder} -> {best_name}，错误：{str(e)}"
+                                f"[RenameFolder]文件夹重命名执行失败："
+                                f"{folder} -> {best_name}，错误：{str(e)}"
                             )
                 else:
                     logger.info(
-                        f"[RenameFolder]文件夹重命名失败：未找到顶级文件夹（最佳名称：{best_name or '空'}）"
+                        f"[RenameFolder]文件夹重命名失败：未找到顶级文件夹"
+                        f"（最佳名称：{best_name or '空'}）"
                     )
                 # --------------------取消下载------------------------------
                 if cancel_ids:  # 如果有需要取消下载的文件
@@ -343,6 +491,36 @@ class Manager:
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
+
+    def update_trackers(self):
+        """
+        更新所有种子的tracker列表
+        获取外部tracker列表，合并现有tracker，并去重添加到各种子
+        """
+        self.qb.connect()  # 连接到qBittorrent服务器
+        
+        # 获取外部tracker列表（带缓存）
+        external_trackers = get_external_trackers()
+        if not external_trackers:
+            logger.warning("未能获取到任何外部tracker")
+            return
+
+        # 获取所有种子
+        torrents = self.qb.client.torrents_info()
+        
+        for torrent in torrents:
+            try:
+                # 获取当前种子的现有tracker
+                current_trackers = self.qb.get_torrent_trackers(torrent.hash)
+                
+                # 合并tracker列表并去重
+                all_trackers = list(set(current_trackers + external_trackers))
+                
+                # 添加新的tracker到种子
+                self.qb.add_trackers_to_torrent(torrent.hash, all_trackers)
+                
+            except Exception as e:
+                logger.error(f"更新种子 {torrent.hash} 的tracker时出错: {e}")
 
 
 def main():
@@ -355,5 +533,6 @@ def main():
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
     # 每分钟运行一次
-    # * * * * * /usr/bin/python  /vol1/1000/my_programme/qBittorrent-utils/qbmanager.py
+    # * * * * * /usr/bin/python
+    # /vol1/1000/my_programme/qBittorrent-utils/qbmanager.py
     main()  # 调用主函数

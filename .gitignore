@@ -2,3 +2,5 @@
 /qb-web
 /__pycache__
 /__pycache__/*
+rules.txt
+test.py
