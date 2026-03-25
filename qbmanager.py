@@ -34,9 +34,9 @@ CONFIG = {
     "log_file": BASE_DIR / "qbmanager.log",
 }
 
-# logger.remove()
-# logger.add(CONFIG["log_file"], rotation="10 MB", retention=5)
-# logger.add(lambda msg: print(msg, end=""))
+logger.remove()
+logger.add(CONFIG["log_file"], rotation="10 MB", retention=0)
+logger.add(lambda msg: print(msg, end=""))
 
 
 class CancelDownload(Action):
@@ -289,6 +289,7 @@ class Manager:
             self.engine.load()  # 加载最新规则（热加载）
 
             for torrent, files in self.qb.scan():  # 扫描所有种子
+                
                 cancel_ids = []  # 存储需要取消下载的文件ID
 
                 for f in files:  # 遍历种子中的所有文件
