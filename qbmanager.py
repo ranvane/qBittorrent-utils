@@ -393,11 +393,46 @@ class QBController:
             )
             
             logger.info(
-                f"为种子 {torrent_hash} 添加了 {len(new_trackers)} 个新tracker"
-            )
+                 f"为种子 {torrent_hash} 添加了 {len(new_trackers)} 个新tracker"
+             )
             
         except Exception as e:
             logger.error(f"向种子 {torrent_hash} 添加tracker失败: {e}")
+
+    def remove_all_trackers_from_torrent(self, torrent_hash):
+        """
+        从指定种子移除所有tracker
+
+        参数:
+            torrent_hash (str): 种子的哈希值
+        """
+        try:
+            # 获取当前种子的tracker列表
+            current_trackers = self.get_torrent_trackers(torrent_hash)
+            
+            if not current_trackers:
+                logger.info(f"种子 {torrent_hash} 没有任何tracker，无需移除")
+                return
+            
+            # 逐个移除tracker
+            for tracker_url in current_trackers:
+                try:
+                    self.client.torrents_remove_trackers(
+                        torrent_hash=torrent_hash,
+                        urls=tracker_url
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"移除种子 {torrent_hash} 的tracker "
+                        f"{tracker_url} 时出错: {e}"
+                    )
+            
+            logger.info(
+                f"已移除种子 {torrent_hash} 的 {len(current_trackers)} 个tracker"
+            )
+            
+        except Exception as e:
+            logger.error(f"获取种子 {torrent_hash} 的tracker列表时出错: {e}")
 
 
 def update_trackers(qb_controller):
@@ -437,6 +472,28 @@ def update_trackers(qb_controller):
             
         except Exception as e:
             logger.error(f"更新种子 {torrent.hash} 的tracker时出错: {e}")
+
+
+def clear_all_trackers(qb_controller):
+    """
+    清除所有种子的tracker
+
+    参数:
+        qb_controller (QBController): QBController实例
+    """
+    qb_controller.connect()  # 连接到qBittorrent服务器
+
+    # 获取所有种子
+    torrents = qb_controller.client.torrents_info()
+    
+    # 从每个种子移除所有tracker
+    for torrent in torrents:
+        try:
+            # 从种子移除所有tracker
+            qb_controller.remove_all_trackers_from_torrent(torrent.hash)
+            
+        except Exception as e:
+            logger.error(f"清除种子 {torrent.hash} 的tracker时出错: {e}")
 
 
 # 在QBController类后面添加额外的空行
