@@ -125,6 +125,7 @@ class RuleEngine:
         加载规则文件
         如果文件不存在则创建默认文件，如果文件被修改则重新加载
         """
+        logger.info(f"加载规则文件: {os.path.abspath(self.file)}")
         if not os.path.exists(self.file):  # 如果规则文件不存在
             with open(self.file, "w", encoding="utf8") as f:  # 创建并写入默认内容
                 f.write('''#******************规则说明***************************
