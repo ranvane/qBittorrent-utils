@@ -2,11 +2,12 @@ import os
 import re
 import fnmatch
 import traceback
-
+import os
 from loguru import logger
 
 from qb_utils import parse_size, sanitize_name, remove_by_match
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class Condition:
     """
@@ -112,7 +113,7 @@ class RuleEngine:
         参数:
             rule_file (str): 规则文件路径
         """
-        self.file = rule_file  # 规则文件路径
+        self.file = os.path.join(BASE_DIR, rule_file)  # 规则文件路径
 
         self.rules = []  # 规则列表
 
