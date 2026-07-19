@@ -54,8 +54,8 @@ filename:*AI科技*.jpg;filename:*AI科技*.png;filename:*AI科技*.gif;filename
 filename:*技术一流.png;filename:*91porn.PNG*;filename:*蜜桃影像传媒.png*
 
 
-
-min_size:5M;
+# 小于5MB取消下载
+# min_size:5M;
 
 # 小于10MB取消下载
 #min_size:10M;

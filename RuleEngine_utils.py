@@ -287,17 +287,17 @@ if __name__ == "__main__":
     engine.load()
     #测试文件名替换规则
 
-    new_name = engine.rename(
-        "【ai增强】edmosaicedea-567肉欲色女孩喜欢吃大gg跟精液，插入后爽到翻白眼！5p无码性爱影片mia4k60帧增强版/489155.com@【AI增强】EDMosaicEDEA-567肉欲色女孩喜欢吃大GG跟精液，插入后爽到翻白眼！5P无码性爱影片Mia4K60帧增强版.mp4"
-    )
-    print(new_name)
+    # new_name = engine.rename(
+    #     "【ai增强】edmosaicedea-567肉欲色女孩喜欢吃大gg跟精液，插入后爽到翻白眼！5p无码性爱影片mia4k60帧增强版/489155.com@【AI增强】EDMosaicEDEA-567肉欲色女孩喜欢吃大GG跟精液，插入后爽到翻白眼！5P无码性爱影片Mia4K60帧增强版.mp4"
+    # )
+    # print(new_name)
 
-    # #测试取消下载规则
-    # #  创建模拟对象
-    # from qb_utils import File
-    # raw_obj = MockRaw("Movie.2024.CC.mp4", parse_size("100MB"))
-    # torrent_obj = MockTorrent()
+    #测试取消下载规则
+    #  创建模拟对象
+    from qb_utils import File
+    raw_obj = MockRaw("photo_2025-09-11_10-27-09 (2).jpg", parse_size("100KB"))
+    torrent_obj = MockTorrent()
 
-    # f = File(torrent_obj, raw_obj)
+    f = File(torrent_obj, raw_obj)
 
-    # engine.debug_match(f)
+    engine.debug_match(f)
