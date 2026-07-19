@@ -26,7 +26,7 @@ from RuleEngine_utils import RuleEngine
 
 
 def get_external_trackers(
-    url="https://ngosang.github.io/trackerslist/trackers_best.txt", 
+    url="https://ngosang.github.io/trackerslist/trackers_all.txt", 
     cache_file=".trackers_cache", 
     cache_duration=3600
 ):
