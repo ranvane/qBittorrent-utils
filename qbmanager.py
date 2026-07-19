@@ -17,7 +17,7 @@ import traceback
 import requests
 import os
 import time
-
+import json
 import qbittorrentapi
 from loguru import logger
 
@@ -25,82 +25,103 @@ from qb_utils import get_top_folder, File, Torrent, Action, choose_best_name
 from RuleEngine_utils import RuleEngine
 
 
+
+# 配置缓存文件路径和过期时间（单位：秒，这里设置为 1 小时）
+TRACKER_CACHE_FILE = "trackers_cache.json"
+CACHE_EXPIRE_TIME = 1 * 3600 
+NEW_TORRENT_THRESHOLD = 10 * 60  # 多少秒内的种子视为“新添加”(此处为10分钟)
+
+# 定义需要更新的下载状态
+ACTIVE_STATES = [
+    'downloading',   # 正在下载
+    'stalledDL',     # 等待下载 (通常是因为没连接上tracker)
+    'metaDL',        # 正在获取元数据
+    'forcedDL',      # 强制下载
+    'allocating',    # 正在分配磁盘空间
+    'queuedDL'       # 排队下载
+]
+
 def get_external_trackers(
+    qb_controller,
     url="https://ngosang.github.io/trackerslist/trackers_all.txt", 
-    cache_file=".trackers_cache", 
-    cache_duration=3600
 ):
     """
-    从URL获取tracker列表，并使用缓存机制避免频繁请求
+    获取 Tracker 列表：合并外部 URL 列表 + qB 现有种子 Tracker，并处理缓存
 
     参数:
-        url (str): 获取tracker列表的URL
-        cache_file (str): 缓存文件路径
-        cache_duration (int): 缓存持续时间（秒），默认1小时
-
-    返回:
-        list: tracker URL 列表
+        qb_controller: QBController 实例
+        url: 外部 Tracker 列表地址
+        cache_file: 缓存文件名
+        cache_duration: 缓存有效期（秒）
     """
-    # 检查缓存文件是否存在及是否过期
-    if os.path.exists(cache_file):
-        cache_time = os.path.getmtime(cache_file)
-        current_time = time.time()
-        
-        if current_time - cache_time < cache_duration:
-            # 缓存未过期，从缓存文件读取
+    now = time.time()
+
+    # 1. 尝试从缓存读取
+    if os.path.exists(TRACKER_CACHE_FILE):
+        cache_time = os.path.getmtime(TRACKER_CACHE_FILE)
+        if now - cache_time < CACHE_EXPIRE_TIME:
             try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
+                with open(TRACKER_CACHE_FILE, 'r', encoding='utf-8') as f:
                     trackers = [line.strip() for line in f if line.strip()]
-                    logger.info(f"从缓存加载了 {len(trackers)} 个tracker")
-                    return trackers
+                    if trackers:
+                        logger.info(f"从缓存加载了 {len(trackers)} 个 Tracker")
+                        return trackers
             except Exception as e:
                 logger.error(f"读取缓存文件失败: {e}")
-    
-    # 缓存不存在或已过期，从网络获取
+
+    # 2. 缓存失效，开始执行合并逻辑
+    logger.info("缓存失效或不存在，开始同步最新 Tracker 列表...")
+    all_trackers_set = set()
+
+    # --- A. 获取外部网络 Tracker ---
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
+        ext_trackers = [line.strip() for line in response.text.splitlines() if line.strip()]
+        for t in ext_trackers:
+            if t.startswith(('http://', 'https://', 'udp://', 'ws://', 'wss://')):
+                all_trackers_set.add(t)
+        logger.info(f"从网络获取了 {len(ext_trackers)} 个 Tracker")
+    except Exception as e:
+        logger.error(f"从网络获取 Tracker 失败: {e}")
+
+    # --- B. 获取 qBittorrent 现有种子的 Tracker ---
+    try:
+        qb_controller.connect()
+        torrents = qb_controller.client.torrents_info()
+        logger.info(f"正在从 {len(torrents)} 个种子中提取现有 Tracker...")
         
-        # 分割响应内容为行，并过滤空行
-        lines = response.text.splitlines()
-        trackers = [line.strip() for line in lines if line.strip()]
-        
-        # 过滤掉无效的tracker URL
-        valid_trackers = []
-        for tracker in trackers:
-            tracker = tracker.strip()
-            if tracker.startswith(
-                ('http://', 'https://', 'udp://', 'ws://', 'wss://')
-            ):
-                valid_trackers.append(tracker)
-        
-        # 保存到缓存文件
+        for torrent in torrents:
+            # 注意：get_torrent_trackers 是耗时操作，每个种子都会产生一次请求
+            current_trackers = qb_controller.get_torrent_trackers(torrent.hash)
+            for t in current_trackers:
+                # 过滤掉一些私有种子或无效的 tracker
+                if t.startswith(('http', 'udp')):
+                    all_trackers_set.add(t)
+    except Exception as e:
+        logger.error(f"从 qB 种子提取 Tracker 出错: {e}")
+
+    # 3. 结果去重并存入缓存
+    final_list = sorted(list(all_trackers_set))
+    
+    if final_list:
         try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                for tracker in valid_trackers:
+            with open(TRACKER_CACHE_FILE, 'w', encoding='utf-8') as f:
+                for tracker in final_list:
                     f.write(tracker + '\n')
-            logger.info(f"已更新缓存文件，包含 {len(valid_trackers)} 个tracker")
+            logger.info(f"已更新缓存，合并后共 {len(final_list)} 个 Tracker")
         except Exception as e:
             logger.error(f"写入缓存文件失败: {e}")
-        
-        logger.info(f"从网络获取了 {len(valid_trackers)} 个tracker")
-        return valid_trackers
-    
-    except Exception as e:
-        logger.error(f"获取tracker列表失败: {e}")
-        # 如果网络获取失败，尝试从缓存读取（即使已过期）
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    trackers = [line.strip() for line in f if line.strip()]
-                    logger.info(
-                        f"网络获取失败，从缓存加载了 {len(trackers)} 个tracker"
-                    )
-                    return trackers
-            except Exception as e2:
-                logger.error(f"从缓存读取也失败: {e2}")
-        
-        return []
+    else:
+        # 如果获取失败且没缓存，尝试返回旧缓存（哪怕过期）
+        logger.warning("未能获取到任何 Tracker，尝试使用旧缓存...")
+        if os.path.exists(TRACKER_CACHE_FILE):
+            with open(TRACKER_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return [line.strip() for line in f if line.strip()]
+
+    return final_list
+
+
 
 
 CONFIG = {
@@ -442,44 +463,52 @@ class QBController:
             logger.error(f"获取种子 {torrent_hash} 的tracker列表时出错: {e}")
 
 
-def update_trackers(qb_controller):
+
+def update_trackers(qb_controller, new_threshold_seconds=NEW_TORRENT_THRESHOLD):
     """
-    更新所有种子的tracker列表
-    获取外部tracker列表，合并现有tracker，并去重添加到各种子
+    只给“正在下载”或“最近new_threshold_seconds时间内添加”的种子更新 tracker
 
     参数:
         qb_controller (QBController): QBController实例
+        new_threshold_seconds (int): 判定为“新添加”的时间范围（秒）
     """
-    logger.info("开始更新所有种子的tracker....")
-    qb_controller.connect()  # 连接到qBittorrent服务器
+    logger.info("开始增量更新种子 Tracker...")
     
-    # 获取外部tracker列表（带缓存）
-    external_trackers = get_external_trackers()
+    # 1. 获取外部 Tracker (直接利用你已有的带缓存函数)
+    external_trackers = get_external_trackers(qb_controller)
     if not external_trackers:
-        logger.warning("未能获取到任何外部tracker")
+        logger.warning("未能获取到任何 Tracker，任务结束")
         return
 
-    # 获取所有种子
+    # 2. 连接并获取所有种子信息
+    qb_controller.connect()
     torrents = qb_controller.client.torrents_info()
     
-    # 获取所有现有tracker并去重
-    all_existing_trackers = set()
-    for torrent in torrents:
-        current_trackers = qb_controller.get_torrent_trackers(torrent.hash)
-        all_existing_trackers.update(current_trackers)
+    now = time.time()
     
-    # 合并现有tracker和外部tracker并去重
-    final_trackers = list(set(list(all_existing_trackers) + external_trackers))
-    logger.info(f"Tracker列表长度: {len(final_trackers)}")
+    updated_count = 0
     
-    # 将合并后的tracker列表添加到每个种子
+    # 3. 遍历种子进行逻辑判断
     for torrent in torrents:
-        try:
-            # 添加合并后的tracker到种子
-            qb_controller.add_trackers_to_torrent(torrent.hash, final_trackers)
-            
-        except Exception as e:
-            logger.error(f"更新种子 {torrent.hash} 的tracker时出错: {e}")
+        # 条件 A: 是否处于活跃下载状态
+        is_active = torrent.state in ACTIVE_STATES
+        
+        # 条件 B: 是否为最近添加的种子
+        # torrent.added_on 是 Unix 时间戳
+        is_new = (now - torrent.added_on) < new_threshold_seconds
+        
+        # if is_active: # 只更新活跃下载状态的种子
+        if is_new: # 只更新最近添加的种子
+            try:
+                # 直接添加 external_trackers
+                # qBittorrent API 会自动忽略种子中已存在的 tracker，所以不需要手动去重
+                qb_controller.add_trackers_to_torrent(torrent.hash, external_trackers)
+                updated_count += 1
+                logger.debug(f"已更新种子: {torrent.name[:30]}... (状态: {torrent.state})")
+            except Exception as e:
+                logger.error(f"更新种子 {torrent.hash} 出错: {e}")
+
+    logger.info(f"Tracker 更新任务完成：共检查 {len(torrents)} 个种子，实际更新了 {updated_count} 个符合条件的种子。")
 
 
 def clear_all_trackers(qb_controller):
@@ -607,7 +636,7 @@ def main():
     manager.run()  # 创建管理器实例并运行主循环
     
     # 更新所有种子的tracker列表
-    clear_all_trackers(manager.qb)
+    # clear_all_trackers(manager.qb) # 清除所有种子的tracker, 涉及到比较耗时，请谨慎使用
     update_trackers(manager.qb)
     
 

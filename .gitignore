@@ -1,4 +1,6 @@
 /qb-web
 /__pycache__
 /__pycache__/*
-.trackers_cacheqbmanager.log
+qbmanager.log
+.trackers_cache
+trackers_cache.json
