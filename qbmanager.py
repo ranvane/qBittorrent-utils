@@ -443,6 +443,7 @@ def update_trackers(qb_controller):
     参数:
         qb_controller (QBController): QBController实例
     """
+    logger.info("开始更新所有种子的tracker....")
     qb_controller.connect()  # 连接到qBittorrent服务器
     
     # 获取外部tracker列表（带缓存）
@@ -481,6 +482,7 @@ def clear_all_trackers(qb_controller):
     参数:
         qb_controller (QBController): QBController实例
     """
+    logger.info("开始清除所有种子的tracker....")
     qb_controller.connect()  # 连接到qBittorrent服务器
 
     # 获取所有种子
@@ -524,7 +526,7 @@ class Manager:
         #     time.sleep(CONFIG["scan_interval"])  # 等待指定的扫描间隔时间
         try:
             self.engine.load()  # 加载最新规则（热加载）
-
+            logger.info("开始扫描所有种子....")
             for torrent, files in self.qb.scan():  # 扫描所有种子
                 cancel_ids = []  # 存储需要取消下载的文件ID
 
