@@ -598,8 +598,9 @@ def main():
     manager.run()  # 创建管理器实例并运行主循环
     
     # 更新所有种子的tracker列表
+    clear_all_trackers(manager.qb)
     update_trackers(manager.qb)
-    # clear_all_trackers(manager.qb)
+    
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
