@@ -322,10 +322,17 @@ class QBController:
             username=CONFIG["username"],
             password=CONFIG["password"],
         )
+        logger.info("开始连接qBittorrent服务器....")
+        try:
+            self.client.auth_log_in()  # 登录到qBittorrent服务器
+            logger.info("connected qbittorrent")  # 记录连接成功日志
+        except Exception as e:
+            logger.error(f"无法连接到qBittorrent服务器，请检查配置，{e}")
+            return
 
-        self.client.auth_log_in()  # 登录到qBittorrent服务器
+        
 
-        logger.info("connected qbittorrent")  # 记录连接成功日志
+        
 
     def scan(self):
         """

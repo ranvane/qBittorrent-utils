@@ -13,7 +13,7 @@
 
 # 替换文件夹和文件名中的字符（如replace:【*】表示删除文件夹和文件名中的【*】）
 replace:【*】;replace:(*);replace:【*】;replace:*com@;replace:*【*】;replace:*com-;replace:*vip@;replace:*vip-
-replace:[*];replace:ReducingMosaic;replace:✨;replace:【S级泄密】;replace:2048.vip-
+replace:[*];replace:ReducingMosaic;replace:✨;replace:【S级泄密】;replace:2048.vip-;replace:+++;replace:++
 
 # 取消下载指定扩展名的文件（如ext:.mp4表示取消下载MP4文件）
 ext:.url;ext:.htm;ext:.html;ext:.gif;ext:.rar;ext:.zip;ext:.7z;ext:.chm;ext:.apk;ext:.mhtml;ext:.mht;ext:.txt;ext:.pptx;ext:.pdf
