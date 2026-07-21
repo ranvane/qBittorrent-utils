@@ -51,8 +51,8 @@ filename:*宇宙最丰富完整*.mp4
 filename:*｜.jpg;filename:*｜.png;filename:*❤.png*;filename:*❤.jpg*;filename:*发布*jpg;filename:*记录美好*.jpg;filename:*.mp4.jpg
 filename:*记录美好*.png;filename:*记录美好*.gif;filename:*每日更新*.jpg;filename:*每日更新*.png;filename:*每日更新*.gif;filename:*百万*.jpg
 filename:*AI科技*.jpg;filename:*AI科技*.png;filename:*AI科技*.gif;filename:*海角乱伦.PNG*;filename:*百万*.png;filename:*百万*.gif
-filename:*技术一流.png;filename:*91porn.PNG*;filename:*蜜桃影像传媒.png*
-
+filename:*技术一流.png;filename:*91porn.PNG*;filename:*蜜桃影像传媒.png*;filename:.png
+filename:成人色游.mp4;filename:男人必备.mp4;filename:瑟女聚集地.mp4;filename:真人视讯.mp4
 
 # 小于5MB取消下载
 # min_size:5M;
