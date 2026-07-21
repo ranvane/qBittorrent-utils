@@ -295,7 +295,7 @@ if __name__ == "__main__":
     #测试取消下载规则
     #  创建模拟对象
     from qb_utils import File
-    raw_obj = MockRaw("photo_2025-09-11_10-27-09 (2).jpg", parse_size("100KB"))
+    raw_obj = MockRaw("山东妹妹与热恋男友要求天天都要爱爱，口爆毒龙很爱叫很大声/mp4_ (5).MP4", parse_size("100KB"))
     torrent_obj = MockTorrent()
 
     f = File(torrent_obj, raw_obj)

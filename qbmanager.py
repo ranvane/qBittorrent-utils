@@ -220,6 +220,8 @@ class RenameFile(Action):
 
         # 调用qBittorrent API，重命名种子中的文件
         try:
+            if self.old == self.new:
+                return
             client.torrents_rename_file(torrent_hash=self.hash,
                                         old_path=self.old,
                                         new_path=self.new)
@@ -228,7 +230,7 @@ class RenameFile(Action):
             logger.info(
                 f"重命名文件 {self.torrent.name} : {self.old} -> {self.new}")
         except Exception as e:
-            logger.error(f"重命名文件 {self.old} -> {self.new} 失败，{e}")
+            # logger.error(f"重命名文件 {self.old} -> {self.new} 失败，{e}")
             return
 
 
@@ -568,18 +570,23 @@ class Manager:
 
                 for f in files:  # 遍历种子中的所有文件
                     file = File(torrent, f)  # 创建File对象
+                    # print(file.name)
 
                     if file.priority == 0:  # 如果文件优先级为0（不下载）
                         continue  # 跳过
+
+                    if self.engine.match(file):  # 如果文件匹配规则
+                        cancel_ids.append(file.id)  # 将文件ID添加到取消列表
+                        logger.info(f"匹配规则：{self.engine.debug_match(file)}  -> {file.name} -> 取消下载")
+
                     # --------------------文件重命名操作------------------------------
                     new = self.engine.rename(file.name)  # 获取重命名后的文件名
                     if new != file.name:  # 如果重命名后名称发生变化
                         # 执行文件重命名操作
+                        
                         RenameFile(torrent, file.name,
                                    new).execute(self.qb.client)
 
-                    if self.engine.match(file):  # 如果文件匹配规则
-                        cancel_ids.append(file.id)  # 将文件ID添加到取消列表
 
                 # --------------------种子重命名------------------------------
                 best_name = choose_best_name(self.engine, torrent,
