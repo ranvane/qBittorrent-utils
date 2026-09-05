@@ -2,7 +2,6 @@ import os
 import re
 import fnmatch
 import traceback
-import os
 from loguru import logger
 
 from qb_utils import parse_size, sanitize_name, remove_by_match
@@ -158,6 +157,9 @@ class RuleEngine:
 
                 if not line or line.startswith("#"):  # 如果是空行或注释行
                     continue  # 跳过
+
+                # 将全角分号替换为半角分号，避免规则被错误合并
+                line = line.replace("；", ";")
 
                 cond = {}  # 创建条件字典
 
