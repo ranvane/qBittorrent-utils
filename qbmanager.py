@@ -370,6 +370,11 @@ class MoveFolder(Action):
         参数:
             client: qBittorrent客户端实例
         """
+        # 防御性判断：目录本身就是顶级文件夹时无需移动
+        if self.old == self.top_folder:
+            logger.debug(f"文件夹 '{self.old}' 已是顶级文件夹，无需移动")
+            return
+
         # 计算上移一级后的新路径
         new = self.get_moved_path(self.old)
 
@@ -703,10 +708,24 @@ class Manager:
 
                 # --------------------移动深层目录到顶级（扁平化）------------------------------
                 # 过滤掉不需要的文件后，把所需文件（优先级不为0）所在的深层目录提升到顶级
-                top_folder = get_top_folder(files)  # 获取顶级文件夹名称
+                # 注意：必须重新获取最新文件列表！前面的文件重命名/文件夹重命名/取消下载
+                # 已经改变了真实文件路径与优先级，旧快照会导致路径漂移（404）或误判过滤文件
+                try:
+                    # 重新获取该种子的最新文件列表（反映重命名与取消下载后的真实状态）
+                    latest_files = self.qb.client.torrents_files(
+                        torrent_hash=torrent.hash)
+                except Exception as e:
+                    # 获取失败则回退到旧快照，仅影响本次扁平化，不影响其他种子
+                    logger.error(
+                        f"重新获取种子 {torrent.name} 文件列表失败: "
+                        f"{str(e)}，扁平化将使用旧快照"
+                    )
+                    latest_files = files
+
+                top_folder = get_top_folder(latest_files)  # 获取(最新)顶级文件夹名称
                 if top_folder:  # 仅当存在顶级文件夹时才需要扁平化
                     # 获取所有所需文件所在的深层目录（去重排序）
-                    for deep_dir in get_keep_dirs(files):
+                    for deep_dir in get_keep_dirs(latest_files):
                         # 跳过顶级文件夹本身，只处理其下的深层目录
                         if deep_dir == top_folder:
                             continue
