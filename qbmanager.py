@@ -413,7 +413,11 @@ class QBController:
     def connect(self):
         """
         连接到qBittorrent服务器
+        已连接时跳过，避免重复创建Client对象
         """
+        if self.client:  # 已连接则跳过，避免重复登录
+            return
+
         # 创建qBittorrent客户端实例
         self.client = qbittorrentapi.Client(
             host=CONFIG["host"],
@@ -472,6 +476,7 @@ class QBController:
     def add_trackers_to_torrent(self, torrent_hash, trackers):
         """
         向指定种子添加tracker
+        直接添加，qBittorrent API 会自动忽略已存在的 tracker
 
         参数:
             torrent_hash (str): 种子的哈希值
@@ -481,25 +486,15 @@ class QBController:
             return
 
         try:
-            # 获取当前种子的tracker列表
-            current_trackers = self.get_torrent_trackers(torrent_hash)
-            
-            # 过滤掉已经存在的tracker
-            new_trackers = [t for t in trackers if t not in current_trackers]
-            
-            if not new_trackers:
-                logger.info(f"种子 {torrent_hash} 已经拥有所有tracker，无需添加")
-                return
-            
-            # 添加新tracker
-            tracker_string = '\n'.join(new_trackers)
+            # 直接添加，跳过逐个查询（qB API 自动去重），减少 API 调用
+            tracker_string = '\n'.join(trackers)
             self.client.torrents_add_trackers(
                 torrent_hash=torrent_hash,
                 urls=tracker_string
             )
             
             logger.info(
-                 f"为种子 {torrent_hash} 添加了 {len(new_trackers)} 个新tracker"
+                 f"为种子 {torrent_hash} 添加了 {len(trackers)} 个tracker"
              )
             
         except Exception as e:
@@ -645,15 +640,16 @@ class Manager:
                 cancel_ids = []  # 存储需要取消下载的文件ID
 
                 for f in files:  # 遍历种子中的所有文件
+                    # 跳过优先级为0的文件（不下载），无需创建 File 对象
+                    if f.priority == 0:
+                        continue
+
                     file = File(torrent, f)  # 创建File对象
-                    # print(file.name)
 
-                    if file.priority == 0:  # 如果文件优先级为0（不下载）
-                        continue  # 跳过
-
-                    if self.engine.match(file):  # 如果文件匹配规则
+                    matched_rule = self.engine.match(file)  # 匹配规则，返回 Rule 对象或 None
+                    if matched_rule:  # 如果文件匹配规则
                         cancel_ids.append(file.id)  # 将文件ID添加到取消列表
-                        logger.info(f"匹配规则：{self.engine.debug_match(file)}  -> {file.name} -> 取消下载")
+                        self.engine.debug_match(file, matched_rule)  # 传入已匹配结果避免二次扫描
 
                     # --------------------文件重命名操作------------------------------
                     new = self.engine.rename(file.name)  # 获取重命名后的文件名

@@ -27,6 +27,17 @@ class Condition:
         self.min_size = data.get("min_size")  # 最小文件大小限制
         self.max_size = data.get("max_size")  # 最大文件大小限制
 
+        # 预编译文件名通配符模式为正则表达式，避免每次匹配时重复编译
+        self._compiled_filename = []
+        if self.filename:
+            for p in self.filename:
+                try:
+                    # fnmatch.translate 将 shell 通配符转为正则（如 *.mp4 → (?s:.*\.mp4)\Z）
+                    self._compiled_filename.append(re.compile(fnmatch.translate(p)))
+                except re.error:
+                    # 极少数非法模式降级为原始字符串匹配
+                    self._compiled_filename.append(None)
+
     def match(self, file):
         """
         检查文件是否满足当前条件
@@ -38,27 +49,23 @@ class Condition:
             bool: 如果文件满足任一条件则返回True，否则返回False
         """
         try:
-            if self.filename:  # 如果设置了文件名匹配条件
-                for p in self.filename:  # 遍历所有文件名匹配模式
-                    if fnmatch.fnmatch(file.name.lower(),
-                                       p):  # 先将文件名转换为小写，再使用shell风格通配符匹配文件名
-                        logger.debug(f"匹配文件名规则: {file.name} -> {p}")
+            if self._compiled_filename:  # 使用预编译的正则进行文件名匹配
+                fname_lower = file.name.lower()
+                for compiled in self._compiled_filename:
+                    if compiled and compiled.match(fname_lower):
                         return True
 
             if self.ext:  # 如果设置了扩展名匹配条件
                 for e in self.ext:  # 遍历所有扩展名
                     if file.ext == e:  # 检查文件扩展名是否匹配
-                        logger.debug(f"匹配扩展名规则: {file.name}")
                         return True
 
             if (self.min_size
                     and file.size < self.min_size):  # 如果设置了最小大小限制且文件小于限制
-                logger.debug(f"匹配 min_size 规则: {self.min_size}")
                 return True
 
             if (self.max_size
                     and file.size > self.max_size):  # 如果设置了最大大小限制且文件大于限制
-                logger.debug(f"匹配 max_size 规则: {self.max_size}")
                 return True
 
             return False  # 文件不满足任何条件
@@ -93,9 +100,11 @@ class Rule:
             file (File): 要检查的文件对象
 
         返回:
-            bool: 如果文件匹配规则则返回True，否则返回False
+            Rule or None: 匹配成功返回自身，否则返回None
         """
-        return self.cond.match(file)  # 调用条件对象的match方法
+        if self.cond.match(file):  # 调用条件对象的match方法
+            return self  # 匹配成功返回自身（含 raw 等信息）
+        return None
 
 
 class RuleEngine:
@@ -206,13 +215,12 @@ class RuleEngine:
             file (File): 要检查的文件对象
 
         返回:
-            bool: 如果文件匹配任一规则则返回True，否则返回False
+            Rule or None: 首个匹配的规则对象，无匹配返回None
         """
         for r in self.rules:  # 遍历所有规则
             if r.match(file):  # 检查文件是否匹配当前规则
-                return True  # 如果匹配则立即返回True
-
-        return False  # 所有规则都不匹配则返回False
+                return r  # 匹配成功返回该规则对象
+        return None  # 所有规则都不匹配则返回None
 
     def rename(self, file_path: str, is_folder=False) -> str:
         """
@@ -244,24 +252,31 @@ class RuleEngine:
             new_name = sanitize_name(new_name) + ext  # 拼回扩展名并清理
             return os.path.join(dir_path, new_name)  # 拼回原目录
 
-    def debug_match(self, file):
+    def debug_match(self, file, matched_rule=None):
         """
         调试规则匹配
-        打印匹配到的规则
-        
+        若已传入 matched_rule 则直接记录，否则重新扫描
+
         参数:
             file (File): 要测试匹配的文件对象
+            matched_rule (Rule, optional): 已匹配的规则对象
         """
-        matched = False  # 标记是否有规则匹配
+        if matched_rule:  # 已有匹配结果，直接记录，避免二次扫描
+            rule_idx = self.rules.index(matched_rule) + 1
+            logger.info(
+                f"匹配第{rule_idx}行的规则（除去注释）: {matched_rule.raw}"
+            )
+            return
 
-        # 遍历所有规则，检查是否匹配给定文件
-        for i, r in enumerate(self.rules, 1):  # 使用enumerate为规则编号（从1开始）
-            if r.match(file):  # 检查当前规则是否匹配文件
-                logger.info(f"匹配第{i}行的规则（除去注释）: {r.raw}")  # 记录匹配成功的规则编号和原始规则内容
-                matched = True  # 设置匹配标记为True
+        # 无传入结果时降级为全量扫描（兼容外部直接调用）
+        matched = False
+        for i, r in enumerate(self.rules, 1):
+            if r.match(file):
+                logger.info(f"匹配第{i}行的规则（除去注释）: {r.raw}")
+                matched = True
 
-        if not matched:  # 如果没有任何规则匹配
-            logger.info("没有任何规则匹配")  # 记录未匹配任何规则的信息
+        if not matched:
+            logger.info("没有任何规则匹配")
 
 
 # 创建一个模拟的raw对象，具有File类期望的属性
