@@ -21,6 +21,7 @@
 5. **中文字符最多优先作为资源名称**。
 6. **规则热加载**：修改 `rules.txt` 后无需重启，下一次扫描自动应用。
 7. **添加 Tracker 列表**：从外部源拉取并合并 Tracker，内置 1 小时缓存。
+8. **深层目录扁平化**：过滤掉不需要的文件后，将所需文件（优先级≠0）所在的深层目录逐层上移到顶级文件夹正下方。
 
 ---
 
@@ -51,6 +52,7 @@
 | `RenameFile` | 重命名种子内单个文件 |
 | `RenameTorrent` | 重命名整个种子 |
 | `RenameFolder` | 重命名种子内顶级文件夹 |
+| `MoveFolder` | 将深层文件夹上移一级（配合循环实现扁平化到顶级） |
 | `QBController` | 连接 qB、扫描种子、Tracker 增删查 |
 | `update_trackers()` | 增量更新 Tracker（只更新最近添加/活跃下载的种子） |
 | `clear_all_trackers()` | 清除所有种子的 Tracker（谨慎使用，耗时） |
@@ -70,6 +72,7 @@
 | `chinese_count()` | 统计中文字符数量 |
 | `extract_filename_noext()` | 提取不含扩展名的文件名 |
 | `get_top_folder()` | 获取文件列表的顶级文件夹名称 |
+| `get_keep_dirs()` | 获取所有所需文件（优先级≠0）所在的深层目录路径（去重排序，用于扁平化） |
 | `File` 类 | 文件对象（id/name/size/priority/ext） |
 | `Torrent` 类 | 种子对象（hash/name） |
 | `Action` 类 | 操作基类（定义 `execute()` 接口） |
@@ -117,7 +120,7 @@
    - 修改前先充分理解现有逻辑，最小化改动范围，不要改动无关部分。
    - 保持向后兼容，不破坏已验证的功能行为。
 9. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：
-   - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式。
+   - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式、深层目录扁平化（`get_keep_dirs`/`MoveFolder`）。
    - 可运行 `python3 RuleEngine_utils.py` 进行规则引擎的 Mock 自测。
    - 必要时在真实环境（或将 `CONFIG["dry_run"]` 置 `True` 的模拟环境）全流程运行 `python3 qbmanager.py` 验证。
    - **测试未通过不得提交。**

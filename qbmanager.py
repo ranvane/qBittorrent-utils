@@ -22,6 +22,7 @@ import qbittorrentapi
 from loguru import logger
 
 from qb_utils import get_top_folder, File, Torrent, Action, choose_best_name
+from qb_utils import get_keep_dirs
 from RuleEngine_utils import RuleEngine
 
 
@@ -320,6 +321,76 @@ class RenameFolder(Action):
                 f"重命名文件夹 {self.torrent.name} : {self.old} -> {self.new}")
         except Exception as e:
             logger.error(f"重命名文件夹 {self.old} -> {self.new} 失败，{e}")
+
+
+class MoveFolder(Action):
+    """
+    移动文件夹操作类
+    继承自Action基类，用于将种子内的深层文件夹移动到顶级文件夹下（扁平化目录）
+    """
+
+    def __init__(self, torrent, old, top_folder):
+        """
+        初始化移动文件夹操作
+
+        参数:
+            torrent (Torrent): 关联的种子对象
+            old (str): 原始深层目录完整路径（如 "顶级/子目录1/子目录2"）
+            top_folder (str): 顶级文件夹名称（用于判断目录是否已在顶级）
+        """
+        self.torrent = torrent  # 关联的种子对象
+        self.hash = torrent.hash  # 种子哈希值
+        self.old = old  # 原始深层目录路径
+        self.top_folder = top_folder  # 顶级文件夹名称
+
+    @staticmethod
+    def get_moved_path(old):
+        """
+        计算目录上移一级后的新路径（静态工具方法）
+
+        参数:
+            old (str): 原始目录完整路径，如 "顶级/父/末级"
+
+        返回:
+            str: 上移一级后的路径 "顶级/末级"；若层级已足够浅（<=2级）则返回旧路径本身
+        """
+        parts = old.split("/")  # 将完整路径切分为各层段
+
+        if len(parts) <= 2:  # 层级不超过两级则无需上提
+            return old
+
+        return "/".join(parts[:-2] + [parts[-1]])  # 去掉倒数第二段，实现上移一级
+
+    def execute(self, client):
+        """
+        执行移动文件夹操作
+        将深层目录向上提升一级（让末级目录脱离其直接父目录，移到祖父目录下）
+        多次运行（或循环调用）后，目录最终会扁平化到顶级文件夹正下方
+
+        参数:
+            client: qBittorrent客户端实例
+        """
+        # 计算上移一级后的新路径
+        new = self.get_moved_path(self.old)
+
+        # 路径未变化说明层级已足够浅（<=2级），无需移动
+        if new == self.old:
+            logger.debug(f"文件夹 '{self.old}' 层级已足够浅，无需移动")
+            return
+
+        if CONFIG["dry_run"]:  # 如果是模拟运行模式
+            logger.info(f"[DRY] move folder {self.old} -> {new}")  # 记录将要执行的操作
+            return
+
+        # 调用qBittorrent API，将深层目录上移一级
+        try:
+            client.torrents_rename_folder(torrent_hash=self.hash,
+                                          old_path=self.old,
+                                          new_path=new)
+            # 记录实际执行的操作
+            logger.info(f"移动文件夹 {self.torrent.name} : {self.old} -> {new}")
+        except Exception as e:
+            logger.error(f"移动文件夹 {self.old} -> {new} 失败，{e}")
 
 
 class QBController:
@@ -629,6 +700,35 @@ class Manager:
                 if cancel_ids:  # 如果有需要取消下载的文件
                     # 执行取消下载操作
                     CancelDownload(torrent, cancel_ids).execute(self.qb.client)
+
+                # --------------------移动深层目录到顶级（扁平化）------------------------------
+                # 过滤掉不需要的文件后，把所需文件（优先级不为0）所在的深层目录提升到顶级
+                top_folder = get_top_folder(files)  # 获取顶级文件夹名称
+                if top_folder:  # 仅当存在顶级文件夹时才需要扁平化
+                    # 获取所有所需文件所在的深层目录（去重排序）
+                    for deep_dir in get_keep_dirs(files):
+                        # 跳过顶级文件夹本身，只处理其下的深层目录
+                        if deep_dir == top_folder:
+                            continue
+                        # 循环上移：每次提升一级，直到目录层级足够浅（<=2级）
+                        current = deep_dir
+                        while True:
+                            # 计算上移一级后的新路径
+                            moved = MoveFolder.get_moved_path(current)
+                            if moved == current:  # 路径不变说明已足够浅，结束
+                                break
+                            try:
+                                # 执行移动：上移一级
+                                MoveFolder(torrent, current,
+                                           top_folder).execute(self.qb.client)
+                            except Exception as e:
+                                # 捕获移动执行过程中的异常，增强容错性
+                                logger.error(
+                                    f"[MoveFolder]目录扁平化执行失败："
+                                    f"{current}，错误：{str(e)}"
+                                )
+                                break  # 移动失败则放弃当前目录
+                            current = moved  # 更新路径，继续下一级上移
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
