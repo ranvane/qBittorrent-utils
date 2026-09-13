@@ -136,8 +136,43 @@ def get_top_folder(files):
             # 返回第一个部分，即顶级文件夹名称
             return parts[0]
 
-    # 如果没有找到任何有层级结构的文件路径，则返回None
+        # 如果没有找到任何有层级结构的文件路径，则返回None
     return None
+
+
+def get_keep_dirs(files):
+    """
+    从文件列表中获取所有"所需文件"（优先级不为0）所在的深层目录路径
+    用于将深层目录移动到顶级文件夹（扁平化目录结构）
+
+    参数:
+        files: 包含文件对象的列表，每个文件对象有 name/priority 属性
+
+    返回:
+        list: 需要提升到顶级的深层目录路径列表（去重，已按路径排序）
+    """
+    dirs = set()  # 存储需要提升的目录路径（去重）
+
+    for f in files:
+        # 跳过优先级为0的文件（被过滤掉、无需下载的文件）
+        if f.priority == 0:
+            continue
+
+        # 将文件路径分割为各个部分
+        parts = pathlib.Path(f.name).parts
+
+        # 路径包含多个部分说明文件在某个文件夹中
+        if len(parts) > 1:
+            # 文件的目录部分 = 除文件名外的所有路径段（即全路径去掉末级文件名）
+            dir_path = "/".join(parts[:-1])
+            # 收集该目录路径
+            dirs.add(dir_path)
+
+    # 按路径排序返回，保证执行顺序稳定（先处理浅层目录）
+    return sorted(dirs)
+
+
+
 
 
 class File:

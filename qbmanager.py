@@ -22,6 +22,7 @@ import qbittorrentapi
 from loguru import logger
 
 from qb_utils import get_top_folder, File, Torrent, Action, choose_best_name
+from qb_utils import get_keep_dirs
 from RuleEngine_utils import RuleEngine
 
 
@@ -322,6 +323,81 @@ class RenameFolder(Action):
             logger.error(f"重命名文件夹 {self.old} -> {self.new} 失败，{e}")
 
 
+class MoveFolder(Action):
+    """
+    移动文件夹操作类
+    继承自Action基类，用于将种子内的深层文件夹移动到顶级文件夹下（扁平化目录）
+    """
+
+    def __init__(self, torrent, old, top_folder):
+        """
+        初始化移动文件夹操作
+
+        参数:
+            torrent (Torrent): 关联的种子对象
+            old (str): 原始深层目录完整路径（如 "顶级/子目录1/子目录2"）
+            top_folder (str): 顶级文件夹名称（用于判断目录是否已在顶级）
+        """
+        self.torrent = torrent  # 关联的种子对象
+        self.hash = torrent.hash  # 种子哈希值
+        self.old = old  # 原始深层目录路径
+        self.top_folder = top_folder  # 顶级文件夹名称
+
+    @staticmethod
+    def get_moved_path(old):
+        """
+        计算目录上移一级后的新路径（静态工具方法）
+
+        参数:
+            old (str): 原始目录完整路径，如 "顶级/父/末级"
+
+        返回:
+            str: 上移一级后的路径 "顶级/末级"；若层级已足够浅（<=2级）则返回旧路径本身
+        """
+        parts = old.split("/")  # 将完整路径切分为各层段
+
+        if len(parts) <= 2:  # 层级不超过两级则无需上提
+            return old
+
+        return "/".join(parts[:-2] + [parts[-1]])  # 去掉倒数第二段，实现上移一级
+
+    def execute(self, client):
+        """
+        执行移动文件夹操作
+        将深层目录向上提升一级（让末级目录脱离其直接父目录，移到祖父目录下）
+        多次运行（或循环调用）后，目录最终会扁平化到顶级文件夹正下方
+
+        参数:
+            client: qBittorrent客户端实例
+        """
+        # 防御性判断：目录本身就是顶级文件夹时无需移动
+        if self.old == self.top_folder:
+            logger.debug(f"文件夹 '{self.old}' 已是顶级文件夹，无需移动")
+            return
+
+        # 计算上移一级后的新路径
+        new = self.get_moved_path(self.old)
+
+        # 路径未变化说明层级已足够浅（<=2级），无需移动
+        if new == self.old:
+            logger.debug(f"文件夹 '{self.old}' 层级已足够浅，无需移动")
+            return
+
+        if CONFIG["dry_run"]:  # 如果是模拟运行模式
+            logger.info(f"[DRY] move folder {self.old} -> {new}")  # 记录将要执行的操作
+            return
+
+        # 调用qBittorrent API，将深层目录上移一级
+        try:
+            client.torrents_rename_folder(torrent_hash=self.hash,
+                                          old_path=self.old,
+                                          new_path=new)
+            # 记录实际执行的操作
+            logger.info(f"移动文件夹 {self.torrent.name} : {self.old} -> {new}")
+        except Exception as e:
+            logger.error(f"移动文件夹 {self.old} -> {new} 失败，{e}")
+
+
 class QBController:
     """
     qBittorrent控制器类
@@ -337,7 +413,11 @@ class QBController:
     def connect(self):
         """
         连接到qBittorrent服务器
+        已连接时跳过，避免重复创建Client对象
         """
+        if self.client:  # 已连接则跳过，避免重复登录
+            return
+
         # 创建qBittorrent客户端实例
         self.client = qbittorrentapi.Client(
             host=CONFIG["host"],
@@ -396,6 +476,7 @@ class QBController:
     def add_trackers_to_torrent(self, torrent_hash, trackers):
         """
         向指定种子添加tracker
+        直接添加，qBittorrent API 会自动忽略已存在的 tracker
 
         参数:
             torrent_hash (str): 种子的哈希值
@@ -405,25 +486,15 @@ class QBController:
             return
 
         try:
-            # 获取当前种子的tracker列表
-            current_trackers = self.get_torrent_trackers(torrent_hash)
-            
-            # 过滤掉已经存在的tracker
-            new_trackers = [t for t in trackers if t not in current_trackers]
-            
-            if not new_trackers:
-                logger.info(f"种子 {torrent_hash} 已经拥有所有tracker，无需添加")
-                return
-            
-            # 添加新tracker
-            tracker_string = '\n'.join(new_trackers)
+            # 直接添加，跳过逐个查询（qB API 自动去重），减少 API 调用
+            tracker_string = '\n'.join(trackers)
             self.client.torrents_add_trackers(
                 torrent_hash=torrent_hash,
                 urls=tracker_string
             )
             
             logger.info(
-                 f"为种子 {torrent_hash} 添加了 {len(new_trackers)} 个新tracker"
+                 f"为种子 {torrent_hash} 添加了 {len(trackers)} 个tracker"
              )
             
         except Exception as e:
@@ -569,15 +640,16 @@ class Manager:
                 cancel_ids = []  # 存储需要取消下载的文件ID
 
                 for f in files:  # 遍历种子中的所有文件
+                    # 跳过优先级为0的文件（不下载），无需创建 File 对象
+                    if f.priority == 0:
+                        continue
+
                     file = File(torrent, f)  # 创建File对象
-                    # print(file.name)
 
-                    if file.priority == 0:  # 如果文件优先级为0（不下载）
-                        continue  # 跳过
-
-                    if self.engine.match(file):  # 如果文件匹配规则
+                    matched_rule = self.engine.match(file)  # 匹配规则，返回 Rule 对象或 None
+                    if matched_rule:  # 如果文件匹配规则
                         cancel_ids.append(file.id)  # 将文件ID添加到取消列表
-                        logger.info(f"匹配规则：{self.engine.debug_match(file)}  -> {file.name} -> 取消下载")
+                        self.engine.debug_match(file, matched_rule)  # 传入已匹配结果避免二次扫描
 
                     # --------------------文件重命名操作------------------------------
                     new = self.engine.rename(file.name)  # 获取重命名后的文件名
@@ -629,6 +701,49 @@ class Manager:
                 if cancel_ids:  # 如果有需要取消下载的文件
                     # 执行取消下载操作
                     CancelDownload(torrent, cancel_ids).execute(self.qb.client)
+
+                # --------------------移动深层目录到顶级（扁平化）------------------------------
+                # 过滤掉不需要的文件后，把所需文件（优先级不为0）所在的深层目录提升到顶级
+                # 注意：必须重新获取最新文件列表！前面的文件重命名/文件夹重命名/取消下载
+                # 已经改变了真实文件路径与优先级，旧快照会导致路径漂移（404）或误判过滤文件
+                try:
+                    # 重新获取该种子的最新文件列表（反映重命名与取消下载后的真实状态）
+                    latest_files = self.qb.client.torrents_files(
+                        torrent_hash=torrent.hash)
+                except Exception as e:
+                    # 获取失败则回退到旧快照，仅影响本次扁平化，不影响其他种子
+                    logger.error(
+                        f"重新获取种子 {torrent.name} 文件列表失败: "
+                        f"{str(e)}，扁平化将使用旧快照"
+                    )
+                    latest_files = files
+
+                top_folder = get_top_folder(latest_files)  # 获取(最新)顶级文件夹名称
+                if top_folder:  # 仅当存在顶级文件夹时才需要扁平化
+                    # 获取所有所需文件所在的深层目录（去重排序）
+                    for deep_dir in get_keep_dirs(latest_files):
+                        # 跳过顶级文件夹本身，只处理其下的深层目录
+                        if deep_dir == top_folder:
+                            continue
+                        # 循环上移：每次提升一级，直到目录层级足够浅（<=2级）
+                        current = deep_dir
+                        while True:
+                            # 计算上移一级后的新路径
+                            moved = MoveFolder.get_moved_path(current)
+                            if moved == current:  # 路径不变说明已足够浅，结束
+                                break
+                            try:
+                                # 执行移动：上移一级
+                                MoveFolder(torrent, current,
+                                           top_folder).execute(self.qb.client)
+                            except Exception as e:
+                                # 捕获移动执行过程中的异常，增强容错性
+                                logger.error(
+                                    f"[MoveFolder]目录扁平化执行失败："
+                                    f"{current}，错误：{str(e)}"
+                                )
+                                break  # 移动失败则放弃当前目录
+                            current = moved  # 更新路径，继续下一级上移
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
