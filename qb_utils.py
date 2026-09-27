@@ -140,6 +140,71 @@ def get_top_folder(files):
     return None
 
 
+def collect_dirs(files, min_depth=1):
+    """
+    收集文件列表中出现过的所有目录层级路径
+    用于按“自顶向下、逐层”的顺序对目录应用替换规则
+
+    参数:
+        files: 包含文件对象的列表，每个文件对象有 name 属性（相对路径）
+        min_depth (int): 最小层级深度，1 表示包含顶级目录
+
+    返回:
+        list: 目录路径列表，已去重，并按 (深度, 路径) 排序
+              —— 排序保证父目录一定排在子目录之前，便于逐层重命名
+    """
+    dirs = set()  # 存储目录路径（去重）
+
+    for f in files:  # 遍历所有文件
+        # 路径包含多级目录时才需要收集（单文件的种子没有中间目录）
+        parts = pathlib.PurePosixPath(f.name.replace("\\", "/")).parts
+
+        # 末级是文件名不参与收集，因此只取第 1 层到第 len(parts)-1 层
+        # 并用 min_depth 过滤掉不需要处理的浅层（如顶级目录可传 2 跳过）
+        for i in range(min_depth, len(parts)):
+            dirs.add("/".join(parts[:i]))  # 收集该层及以上的完整目录路径
+
+    # 按 (深度, 路径) 排序：深度小（靠上）的目录在前，保证自顶向下处理
+    # 这样父目录改名后，qB 会递归带动子目录，届时只需处理子目录自身的新名字
+    return sorted(dirs, key=lambda p: (p.count("/") + 1, p))
+
+
+def remap_path(path, mapping):
+    """
+    按“旧路径 → 新路径”映射重写给定路径
+    用于父目录改名后，把后续待处理路径的父级前缀同步为新路径
+
+    支持【级联】改写：多层目录自顶向下逐层改名时，前缀会连续变化，
+    必须反复应用映射直到没有新映射可命中，否则第二层及之后的改名会丢失。
+    例：mapping={"A":"B", "B/c":"B/d"} 时，"A/c/f.mp4" 需经两次改写得到 "B/d/f.mp4"
+
+    参数:
+        path (str): 待重写的路径，如 "顶级/深层1/深层2"
+        mapping (dict): 旧路径到新路径的映射，如 {"顶级/深层1": "顶级/分区1"}
+
+    返回:
+        str: 重写后的路径；无匹配前缀时原样返回
+    """
+    result = path  # 当前重写结果
+
+    # 迭代上限取 mapping 大小 + 1：每轮至少命中一个映射才继续，
+    # 因此最多 len(mapping) 轮即可收敛；+1 留一次用于“确认无更多映射”的收尾判断
+    # 该上限同时防止映射互相引用（如 A->B, B->A）导致死循环
+    for _ in range(len(mapping) + 1):
+        for old in sorted(mapping, key=len, reverse=True):  # 长前缀优先，匹配更精确
+            if result == old:  # 完全相等，直接替换
+                return mapping[old]
+
+            if result.startswith(old + "/"):  # 是某个已改名目录的子路径
+                result = mapping[old] + result[len(old):]  # 替换前缀，保留子路径部分
+                break  # 应用一个映射后跳出，重新扫描（可能触发级联改写）
+        else:
+            # 内层循环未被 break，说明没有任何映射能命中当前路径，改写完成
+            break
+
+    return result  # 返回重写结果
+
+
 def get_keep_dirs(files):
     """
     从文件列表中获取所有"所需文件"（优先级不为0）所在的深层目录路径

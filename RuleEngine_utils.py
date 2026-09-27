@@ -4,7 +4,7 @@ import fnmatch
 import traceback
 from loguru import logger
 
-from qb_utils import parse_size, sanitize_name, remove_by_match
+from qb_utils import parse_size, sanitize_name, remove_by_match, File
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -107,6 +107,155 @@ class Rule:
         return None
 
 
+class RenameStep:
+    """
+    单条替换规则的命中记录
+    用于向使用者解释“这一步是哪个规则把字符串改成了什么样”
+    """
+
+    def __init__(self, index, total, pattern, before, after, level=None):
+        """
+        初始化命中记录
+
+        参数:
+            index (int): 该规则在 replaces 列表中的序号（从 1 开始）
+            total (int): 替换规则总数
+            pattern (str): 命中的通配符规则原文
+            before (str): 应用该规则之前的字符串
+            after (str): 应用该规则之后的字符串
+            level (str, optional): 该步骤所属的路径层级（逐级模式用），单级模式为 None
+        """
+        self.index = index  # 规则序号
+        self.total = total  # 规则总数
+        self.pattern = pattern  # 命中的规则原文
+        self.before = before  # 替换前的字符串
+        self.after = after  # 替换后的字符串
+        self.level = level  # 所属层级路径（逐级模式用）
+
+    def to_dict(self):
+        """
+        转为普通字典，方便打印或序列化
+
+        返回:
+            dict: 包含序号、规则、替换前后字符串的字典
+        """
+        return {
+            "index": self.index,
+            "total": self.total,
+            "pattern": self.pattern,
+            "before": self.before,
+            "after": self.after,
+            "level": self.level,
+        }
+
+    def __str__(self):
+        """
+        格式化为单行可读文本
+
+        返回:
+            str: 形如 “第1/16条 replace:【*】 : 旧 -> 新” 的文本
+        """
+        return (f"第{self.index}/{self.total}条  {self.pattern}  :  "
+                f"{self.before!r} -> {self.after!r}")
+
+
+class RenameResult:
+    """
+    重命名解释结果
+    记录原始字符串、最终字符串，以及过程中每一条被命中的替换规则
+    """
+
+    def __init__(self, original, result, steps, is_folder=False, dir_part="", mode="rename"):
+        """
+        初始化解释结果
+
+        参数:
+            original (str): 用户传入的原始字符串
+            result (str): 处理完成后的最终字符串
+            steps (list[ReplaceStep]): 命中的规则列表（未命中任何规则时为空列表）
+            is_folder (bool): 是否按“文件夹名”模式处理
+            dir_part (str): 文件路径模式下未被处理的目录部分
+            mode (str): 报告模式，"rename" 为重命名试算，"cancel" 为取消下载试算
+        """
+        self.original = original  # 原始字符串
+        self.result = result  # 最终字符串
+        self.steps = steps  # 命中的规则列表
+        self.is_folder = is_folder  # 是否为文件夹模式
+        self.dir_part = dir_part  # 未参与替换的目录部分
+        self.mode = mode  # 报告模式
+
+    @property
+    def changed(self):
+        """
+        本次处理是否真的产生了变化
+
+        返回:
+            bool: 原始字符串与最终字符串不同则返回 True
+        """
+        return self.original != self.result
+
+    def to_dict(self):
+        """
+        转为普通字典，方便打印或 JSON 序列化
+
+        返回:
+            dict: 完整解释结果的字典
+        """
+        return {
+            "original": self.original,
+            "result": self.result,
+            "changed": self.changed,
+            "mode": self.mode,
+            "is_folder": self.is_folder,
+            "dir_part": self.dir_part,
+            "steps": [s.to_dict() for s in self.steps],
+        }
+
+    def __str__(self):
+        """
+        格式化为多行可读报告
+
+        返回:
+            str: 包含原始值、逐步命中规则、最终结果的报告文本
+        """
+        lines = []  # 报告行集合
+        lines.append(f"原始字符串 : {self.original}")  # 展示原始字符串
+
+        # 文件路径模式下，额外提示“目录部分不参与替换”这一关键事实
+        # 这是最容易让人误以为 replace 规则失效的原因
+        if not self.is_folder and self.dir_part:
+            lines.append(f"目录部分   : {self.dir_part}  <-- 目录不参与替换规则")
+            lines.append(f"文件名     : {self.result}")
+
+        if self.steps:  # 有规则被命中
+            lines.append("-" * 60)  # 分隔线
+            # 取消下载模式下命中的不是“替换规则”，改用“取消下载规则”措辞
+            label = "取消下载规则" if self.mode == "cancel" else "替换规则"
+            lines.append(f"命中 {len(self.steps)} 条{label}：")  # 命中数量
+
+            if self.mode == "deep":  # 逐级模式：按层级分组展示，直观看出哪一级目录被改
+                last_level = object()  # 哨兵对象，保证首个 level 一定触发分组
+                for s in self.steps:  # 逐条输出
+                    if s.level != last_level:  # 进入新层级
+                        last_level = s.level  # 记录当前层级
+                        lines.append(f"  [层级] {s.level}")  # 输出层级标题
+                    lines.append(f"    第{s.index}/{s.total}条  {s.pattern}  :  "
+                                 f"{s.before!r} -> {s.after!r}")  # 缩进显示规则明细
+            else:  # 单级模式：平铺显示
+                for s in self.steps:  # 逐条输出命中详情
+                    lines.append(f"  {s}")  # 缩进显示每条规则
+
+        lines.append("-" * 60)  # 分隔线
+        lines.append(f"最终结果   : {self.result}")  # 最终字符串
+
+        if self.mode == "cancel":  # 取消下载模式：用“判定”措辞，避免出现“是否变化”这种无意义表述
+            lines.append(f"命中条数   : {len(self.steps)}")  # 命中的规则条数
+        else:  # 重命名模式：提示字符串是否发生变化
+            lines.append(f"是否变化   : {'是' if self.changed else '否（无规则命中）'}")  # 变化标记
+
+        return "\n".join(lines)  # 拼接为完整报告
+
+
 class RuleEngine:
     """
     规则引擎类
@@ -160,6 +309,17 @@ class RuleEngine:
 
         self.rules.clear()  # 清空现有规则列表
 
+        # 【BUG修复】replaces 列表此前从未被清空，热加载时会与旧规则无限累积
+        # （表现为日志里的"重命名规则"数量只增不减，且每次改规则文件都会翻倍）
+        self.replaces.clear()  # 清空现有替换规则列表
+
+        # 去重用的集合：记录已出现过的条件/替换规则，避免同一规则被重复加载
+        # （rules.txt 是长期手工维护的文件，复制粘贴很容易产生重复项）
+        seen_conditions = set()  # 取消下载条件的去重键集合
+        seen_replaces = set()  # 替换规则的去重键集合
+        dup_conditions = 0  # 被去重丢弃的重复条件计数
+        dup_replaces = 0  # 被去重丢弃的重复替换规则计数
+
         with open(self.file, encoding="utf8") as f:  # 以UTF-8编码打开规则文件
             for line in f:  # 逐行读取文件
                 line = line.strip()  # 去除首尾空白字符
@@ -170,22 +330,34 @@ class RuleEngine:
                 # 将全角分号替换为半角分号，避免规则被错误合并
                 line = line.replace("；", ";")
 
-                cond = {}  # 创建条件字典
-
                 parts = line.split(";")  # 以分号分割规则行
 
                 for p in parts:  # 处理每个部分
                     if ":" not in p:  # 如果不包含冒号
                         continue  # 跳过
 
-                    k, v = p.lower().split(":", 1)  # 先将键值对转换为小写，再以冒号分割键值对
+                    # 【BUG修复】此前写作 p.lower().split(":", 1)，把“值”也跟着转成了小写。
+                    # 但 replace 规则是作用在【原始文本】上的（区分大小写），
+                    # 导致 replace:ReducingMosaic / replace:【S级泄密】 这类含大写字母的规则
+                    # 永远匹配不到、静默失效。现改为：只对“键”转小写，值保持原样。
+                    k, v = p.split(":", 1)  # 以冒号分割键值对，值保留原始大小写
 
-                    k = k.strip()  # 去除键的首尾空白字符
+                    k = k.strip().lower()  # 键统一转小写（保证 replace/filename 等键名可识别）
+
                     v = v.strip()  # 去除值的首尾空白字符
 
                     if k == "replace":  # 如果是替换规则字段
+                        # replace 作用于原始文本，保持原始大小写
+                        # 同一替换规则重复出现时结果完全一致，直接丢弃后来的重复项
+                        if v in seen_replaces:  # 已出现过同一条替换规则
+                            dup_replaces += 1  # 累加重复计数
+                            continue  # 跳过，不重复加入
+
+                        seen_replaces.add(v)  # 登记该替换规则
                         self.replaces.append(v)  # 添加到替换规则列表
                         continue
+
+                    v = v.lower()  # 其余匹配条件作用于小写化的文件名（见 Condition.match），保持原有行为
 
                     if k in ("min_size", "max_size"):  # 如果是大小相关字段
                         v = parse_size(v)  # 解析大小字符串
@@ -196,15 +368,31 @@ class RuleEngine:
                     if k == "filename":  # 如果是文件名字段
                         v = [x.strip() for x in v.split(",")]  # 以逗号分割并去除空白字符
 
-                    cond[k] = v  # 添加到条件字典
-                    # logger.debug(f"rule: {cond}加入规则列表 ")
+                    # 以“键 + 值”构造去重键：列表值转成元组（可哈希），标量值直接使用
+                    # 判定结果不受影响（规则之间是 OR 关系，重复条件命中多次也等价于命中一次），
+                    # 去重只是省去冗余匹配，并让日志/统计更准确
+                    dedup_key = (k, tuple(v) if isinstance(v, list) else v)  # 构造可哈希的去重键
 
-                    # 创建规则对象并添加到规则列表，加入原始规则文本
-                    # self.rules.append(Rule(cond))
-                    self.rules.append(Rule(cond, raw=line))
+                    if dedup_key in seen_conditions:  # 已出现过同一条件
+                        dup_conditions += 1  # 累加重复计数
+                        continue  # 跳过，不重复加入
+
+                    seen_conditions.add(dedup_key)  # 登记该条件
+
+                    # 【BUG修复】此前 cond 字典在条件循环【外】创建并被反复复用，
+                    # 导致同一行的第 2 个及之后的 Rule 携带了前面所有条件的累积副本
+                    # （条件本应彼此独立、OR 关系，累积会让后面的 Rule 意外变宽）。
+                    # 现改为每个条件使用独立字典，去重键也才能准确对应单个条件。
+                    self.rules.append(Rule({k: v}, raw=line))  # 创建独立条件对象并加入规则列表
+
+        # 加载统计信息：若有重复项被丢弃，在日志中明确说明，避免"规则莫名不生效"的误判
+        dedup_note = ""
+        if dup_conditions or dup_replaces:  # 仅在确实发生去重时才提示
+            dedup_note = f"（已去重：取消下载条件 {dup_conditions} 条、替换规则 {dup_replaces} 条）"
 
         logger.info(
-            f"共加载 {len(self.rules)} 条取消下载的规则，和 {len(self.replaces)} 条重命名规则"
+            f"共加载 {len(self.rules)} 条取消下载的规则，"
+            f"和 {len(self.replaces)} 条重命名规则{dedup_note}"
         )  # 记录已加载的规则数量
 
     def match(self, file):
@@ -222,6 +410,128 @@ class RuleEngine:
                 return r  # 匹配成功返回该规则对象
         return None  # 所有规则都不匹配则返回None
 
+    def explain_deep(self, file_path: str, is_dir_like=False, top_fallback=None) -> RenameResult:
+        """
+        逐级替换：把路径拆成多级，对**每一级目录名和末级文件名**分别应用全部替换规则
+        与 rename() 的区别在于 rename() 只处理末级文件名，中间目录会被原样保留
+
+        空名保护：若某一级替换后变成空字符串（例如目录名恰好是“【分区1】”，被 replace:【*】 全删），
+        会导致路径出现连续分隔符或空文件名。此处按优先级回退：
+            1) 顶级目录优先使用 top_fallback（通常传入 best_name，即“中文最多”的最佳名）
+            2) 其余情况（深层目录、文件名）保留该级**原名**，即等价于该级不修改
+
+        参数:
+            file_path (str): 待处理路径，如 "顶级/深层1/深层2/视频.mp4"
+            is_dir_like (bool, optional): 路径本身是否就是目录（不以文件名结尾）
+            top_fallback (str, optional): 顶级目录替换为空时的兜底名称
+
+        返回:
+            RenameResult: mode 为 "deep" 的解释结果，result 为逐级替换后的完整路径，
+                           steps 中每条记录都带 level 字段标明所属层级
+        """
+        # 统一分隔符并拆分为层级列表
+        parts = [p for p in file_path.replace("\\", "/").split("/") if p]
+
+        if not parts:  # 空路径直接返回，避免后续索引越界
+            return RenameResult(file_path, file_path, [], mode="deep")
+
+        # 末级是否按“文件名”处理：不是目录路径时，末级要拆扩展名并保留它
+        last_is_file = not is_dir_like and not file_path.endswith(("/", "\\"))
+
+        new_parts = []  # 逐级替换后的层级列表
+        steps = []  # 命中规则记录（跨层级累积）
+        total = len(self.replaces)  # 替换规则总数
+
+        for idx, part in enumerate(parts):  # 逐级处理
+            is_last = (idx == len(parts) - 1)  # 是否为末级
+
+            if is_last and last_is_file:  # 末级是文件名：分离扩展名，只替换主干
+                base, ext = os.path.splitext(part)  # 拆分文件名主干与扩展名
+                current = base  # 当前待替换文本为文件名主干
+            else:  # 目录级：整段名称都参与替换
+                current = part  # 当前待替换文本为整段目录名
+                ext = ""  # 目录无扩展名
+
+            start = len(steps)  # 记录本级新产生记录的起始下标，便于事后统一标注层级
+
+            for i, pattern in enumerate(self.replaces, 1):  # 逐条应用替换规则
+                after = remove_by_match(current, pattern)  # 计算替换结果
+                if after != current:  # 有变化才算命中
+                    steps.append(RenameStep(i, total, pattern, current, after))  # 追加命中记录
+                    current = after  # 更新当前文本，继续下一条规则
+
+            # 【空名保护】替换后该级变为空时不能提交给 qB（会产生 "//" 或无扩展名的空文件名）
+            # 按优先级回退：顶级目录用 best_name 兜底，其余情况保留原名（即该级不修改）
+            if not sanitize_name(current):  # 清理空白后为空，说明该级被替换没了
+                if idx == 0 and top_fallback and sanitize_name(top_fallback):
+                    # 顶级目录且提供了有效兜底名 -> 使用兜底名
+                    current = top_fallback  # 回退到 best_name
+                else:
+                    # 深层目录 / 文件名，或兜底名同样无效 -> 保留原名，该级不做修改
+                    current = part  # 回退到本级原名
+
+            # 统一标注本级产生的所有记录，标明它们属于哪一层路径（便于报告定位）
+            # level 使用“本级及以上的原路径”，与 qBittorrent 的 old_path 语义一致
+            level_path = "/".join(parts[:idx] + [part])  # 本级的原路径前缀
+            for s in steps[start:]:  # 遍历本级新增的记录
+                s.level = level_path  # 打上层级标注
+
+            new_parts.append(sanitize_name(current) + ext)  # 清理空白、拼回扩展名并加入结果
+
+        result = "/".join(new_parts)  # 拼回完整路径
+
+        return RenameResult(
+            original=file_path,  # 原始路径
+            result=result,  # 逐级替换后的路径
+            steps=steps,  # 命中规则列表
+            is_folder=not last_is_file,  # 整体按目录处理
+            dir_part="",  # 逐级模式无需单独区分目录部分
+            mode="deep",  # 标记为逐级替换模式
+        )
+
+    def explain(self, file_path: str, is_folder=False) -> RenameResult:
+        """
+        试算重命名结果，并完整记录“哪条规则在第几步起了作用”
+        与 rename() 共用同一套处理逻辑，保证解释结果与真实行为 100% 一致
+
+        参数:
+            file_path (str): 待处理字符串。文件模式下可含多级目录
+            is_folder (bool, optional): True 表示按文件夹名处理，False 按文件路径处理
+
+        返回:
+            RenameResult: 含原始值、最终值、命中规则列表的解释结果对象
+        """
+        if is_folder:  # 文件夹模式：整串就是名称，不做扩展名拆分
+            dir_part = ""  # 无目录部分
+            name = file_path  # 名称即整串
+            ext = ""  # 无扩展名
+        else:  # 文件路径模式：只对最后一级“文件名”应用替换规则
+            dir_part, filename = os.path.split(file_path)  # 分离目录与文件名
+            name, ext = os.path.splitext(filename)  # 分离文件名主干与扩展名
+
+        current = name  # 当前待处理文本
+        steps = []  # 命中规则记录列表
+        total = len(self.replaces)  # 替换规则总数
+
+        for i, pattern in enumerate(self.replaces, 1):  # 按顺序逐条应用替换规则
+            after = remove_by_match(current, pattern)  # 计算应用该规则后的文本
+            if after != current:  # 只有文本发生变化才算“命中”
+                steps.append(RenameStep(i, total, pattern, current, after))  # 记录这一步
+                current = after  # 更新当前文本，继续下一条规则
+
+        if is_folder:  # 文件夹模式：仅做空白清理
+            result = sanitize_name(current)  # 清理首尾与中间空白
+        else:  # 文件模式：清理空白后拼回扩展名与原目录
+            result = os.path.join(dir_part, sanitize_name(current) + ext)  # 还原完整路径
+
+        return RenameResult(
+            original=file_path,  # 原始字符串
+            result=result,  # 最终字符串
+            steps=steps,  # 命中规则列表
+            is_folder=is_folder,  # 是否文件夹模式
+            dir_part=dir_part,  # 未参与替换的目录部分
+        )
+
     def rename(self, file_path: str, is_folder=False) -> str:
         """
         根据通配符替换规则重命名 BT 种子文件路径中的文件名
@@ -233,24 +543,39 @@ class RuleEngine:
         返回:
             str: 重命名后的完整路径
         """
-        if is_folder:  # 如果是文件夹名
-            new_name = file_path
+        # 直接复用 explain 的处理逻辑，仅取最终结果，避免两套代码行为漂移
+        return self.explain(file_path, is_folder=is_folder).result
 
-        else:  #如果是文件路径
-            dir_path, filename = os.path.split(file_path)  # 分离目录和文件名
-            name, ext = os.path.splitext(filename)  # 分离文件名和扩展名
-            new_name = name
+    def explain_cancel(self, name: str, size=0) -> RenameResult:
+        """
+        试算“取消下载”规则，报告哪些规则命中、为什么命中
+        仅用于调试，不改动任何状态
 
-        for pattern in self.replaces:
-            new_name = remove_by_match(new_name, pattern)  # 根据通配符模式删除匹配内容
+        参数:
+            name (str): 文件名或相对路径（用于 ext / filename 匹配）
+            size (int, optional): 文件大小（字节），用于 min_size / max_size 匹配
 
-        if is_folder:  # 如果是文件夹名
-            new_name = sanitize_name(new_name)
-            return new_name  # 直接返回文件夹名
+        返回:
+            RenameResult: result 为“将被取消下载”或“保留下载”，steps 为命中规则原文
+        """
+        # 构造模拟文件对象，复用与生产完全一致的匹配链路
+        file = File(MockTorrent(), MockRaw(name, size))  # 生成一个仅用于匹配的临时对象
 
-        else:  # 如果是文件路径
-            new_name = sanitize_name(new_name) + ext  # 拼回扩展名并清理
-            return os.path.join(dir_path, new_name)  # 拼回原目录
+        steps = []  # 命中规则列表
+        for i, r in enumerate(self.rules, 1):  # 遍历全部取消下载规则
+            if r.match(file):  # 该规则命中当前文件
+                steps.append(RenameStep(i, len(self.rules), r.raw, name, "取消下载"))  # 记录规则原文
+
+        # 汇总结果：命中任意一条即判定为“取消下载”，与 match() 的首个命中语义一致
+        final = "取消下载（不下载此文件）" if steps else "保留下载"
+        return RenameResult(
+            original=name,  # 原始文件名
+            result=final,  # 判定结果
+            steps=steps,  # 命中的规则列表
+            is_folder=True,  # 视为无需目录拆分的整体
+            dir_part="",  # 无目录部分
+            mode="cancel",  # 标记为取消下载试算模式
+        )
 
     def debug_match(self, file, matched_rule=None):
         """
@@ -261,10 +586,12 @@ class RuleEngine:
             file (File): 要测试匹配的文件对象
             matched_rule (Rule, optional): 已匹配的规则对象
         """
+        # 注意：rules 已按“单条件”去重，索引不再等于 rules.txt 的行号，
+        # 因此日志只报“第几条规则”并附上规则原文（原文比行号更有排查价值）
         if matched_rule:  # 已有匹配结果，直接记录，避免二次扫描
-            rule_idx = self.rules.index(matched_rule) + 1
+            rule_idx = self.rules.index(matched_rule) + 1  # 该规则在去重后列表中的序号
             logger.info(
-                f"匹配第{rule_idx}行的规则（除去注释）: {matched_rule.raw}"
+                f"命中第{rule_idx}/{len(self.rules)}条规则: {matched_rule.raw}"
             )
             return
 
@@ -272,7 +599,7 @@ class RuleEngine:
         matched = False
         for i, r in enumerate(self.rules, 1):
             if r.match(file):
-                logger.info(f"匹配第{i}行的规则（除去注释）: {r.raw}")
+                logger.info(f"命中第{i}/{len(self.rules)}条规则: {r.raw}")
                 matched = True
 
         if not matched:
@@ -297,24 +624,124 @@ class MockTorrent:
         self.name = "mock_torrent"
 
 
-if __name__ == "__main__":
+def _print_report(title, report):
+    """
+    打印一份测试报告（统一输出格式）
 
-    # 创建规则引擎对象
+    参数:
+        title (str): 报告标题，如“替换规则试算”
+        report (RenameResult): explain / explain_cancel 返回的解释结果对象
+    """
+    bar = "=" * 60  # 报告外框分隔线
+    print(bar)  # 输出上边框
+    print(f"【{title}】")  # 输出标题
+    print("-" * 60)  # 输出内部分隔线
+    print(report)  # 输出报告正文
+    print(bar)  # 输出下边框
+
+
+def _interactive(engine):
+    """
+    交互式试算模式
+    循环读取使用者输入的字符串并立即给出替换/取消下载判定，直到输入 quit 退出
+
+    参数:
+        engine (RuleEngine): 已加载规则的引擎实例
+    """
+    print("=" * 60)
+    print("规则引擎交互式试算（直接粘贴种子名/文件名即可）")
+    print("  :r <字符串>  测试重命名替换规则（按文件夹名）")
+    print("  :f <字符串>  测试重命名替换规则（按文件路径，含目录）")
+    print("  :c <文件名>  测试取消下载规则")
+    print("  :q          退出")
+    print("=" * 60)
+
+    while True:  # 持续接收输入
+        try:
+            line = input("> ").strip()  # 读取一行输入并去空白
+        except (EOFError, KeyboardInterrupt):  # 处理 Ctrl+C / Ctrl+D
+            print()  # 换行避免与提示符粘连
+            break  # 退出循环
+
+        if not line:  # 空行直接跳过
+            continue
+
+        if line in (":q", ":quit", "quit", "exit"):  # 退出指令
+            break
+
+        # 解析前缀，支持三种写法：
+        #   1) ":r " / ":f " / ":c "  —— 带冒号的两字符模式
+        #   2) "r " / "f " / "c "     —— 无冒号简写（字母后必须跟空格，避免误吃首字）
+        #   3) 无前缀                 —— 整行即待测字符串，默认按文件夹名试算
+        if line[:2] in (":r", ":f", ":c"):  # 情形 1：带冒号
+            mode, text = line[1].lower(), line[2:].strip()  # 取冒号后的字母作为模式
+        elif len(line) > 1 and line[0] in "rfc" and line[1] == " ":  # 情形 2：无冒号简写
+            mode, text = line[0].lower(), line[1:].strip()  # 取首字母作为模式
+        else:  # 情形 3：无前缀，整行都是待测字符串（此处不做任何截断）
+            mode, text = "r", line.strip()  # 默认按文件夹名试算
+
+        try:
+            if mode == "f":  # :f 开头 —— 按文件路径测试替换
+                _print_report("替换规则试算（文件路径）", engine.explain(text, is_folder=False))
+            elif mode == "c":  # :c 开头 —— 测试取消下载规则
+                _print_report("取消下载规则试算", engine.explain_cancel(text, parse_size("10M")))
+            else:  # 其余情况（含 :r 与无前缀）均按文件夹名试算
+                _print_report("替换规则试算（文件夹名）", engine.explain(text, is_folder=True))
+        except Exception as e:  # 任何异常都不应中断交互循环
+            print(f"试算出错: {e}")
+
+
+if __name__ == "__main__":
+    """
+    命令行入口：支持“传字符串立即出结果”与“交互模式”两种用法
+
+    用法:
+        python3 RuleEngine_utils.py "大神，【Amber】，小红书"   # 测替换规则（仅文件名）
+        python3 RuleEngine_utils.py "目录/文件.mp4" --deep     # 测替换规则（每一级目录都替换）
+        python3 RuleEngine_utils.py "目录" --folder            # 强制按文件夹名处理整串
+        python3 RuleEngine_utils.py "【下课后】/a.mp4" --deep --best "兜底名"  # 顶级目录兜底
+        python3 RuleEngine_utils.py -c "某文件.mp4"            # 测取消下载规则（大小默认 10M）
+        python3 RuleEngine_utils.py -c "某文件.mp4" 500K       # 指定大小
+        python3 RuleEngine_utils.py -i                         # 进入交互模式
+    """
+    import argparse  # 仅命令行模式需要，延迟导入避免污染运行环境
+
+    parser = argparse.ArgumentParser(  # 定义命令行参数
+        description="qBittorrent 规则引擎试算工具",
+    )
+    parser.add_argument("text", nargs="?", help="待试算的字符串")  # 位置参数：待测字符串
+    parser.add_argument("--folder", action="store_true", help="强制把整串当作文件夹名处理")
+    parser.add_argument("--deep", action="store_true", help="逐级替换：路径中每一级目录都应用替换规则")
+    parser.add_argument("--best", metavar="NAME", help="配合 --deep：顶级目录替换为空时的兜底名")
+    parser.add_argument("-c", "--cancel", metavar="NAME", help="测试取消下载规则（传文件名）")
+    parser.add_argument("-s", "--size", default="10M", help="配合 -c 使用的文件大小，默认 10M")
+    parser.add_argument("-i", "--interactive", action="store_true", help="进入交互式试算模式")
+
+    args = parser.parse_args()  # 解析命令行参数
+
+    # 创建规则引擎对象并加载规则（只读操作，不会触碰 qBittorrent）
     engine = RuleEngine("rules.txt")
     engine.load()
-    #测试文件名替换规则
 
-    # new_name = engine.rename(
-    #     "【ai增强】edmosaicedea-567肉欲色女孩喜欢吃大gg跟精液，插入后爽到翻白眼！5p无码性爱影片mia4k60帧增强版/489155.com@【AI增强】EDMosaicEDEA-567肉欲色女孩喜欢吃大GG跟精液，插入后爽到翻白眼！5P无码性爱影片Mia4K60帧增强版.mp4"
-    # )
-    # print(new_name)
+    if args.interactive:  # 交互模式
+        _interactive(engine)
 
-    #测试取消下载规则
-    #  创建模拟对象
-    from qb_utils import File
-    raw_obj = MockRaw("山东妹妹与热恋男友要求天天都要爱爱，口爆毒龙很爱叫很大声/mp4_ (5).MP4", parse_size("100KB"))
-    torrent_obj = MockTorrent()
+    elif args.cancel:  # 取消下载规则试算
+        _print_report(
+            "取消下载规则试算",
+            engine.explain_cancel(args.cancel, parse_size(args.size)),
+        )
 
-    f = File(torrent_obj, raw_obj)
+    elif args.text:  # 重命名替换规则试算
+        if args.deep:  # 逐级替换模式：每一级目录 + 文件名都应用规则
+            _print_report(
+                "替换规则试算（逐级）",
+                engine.explain_deep(args.text, top_fallback=args.best),
+            )
+        else:  # 默认按文件路径模式（能同时显示"目录部分不参与替换"这一关键提示）
+            # 显式指定 --folder 时按文件夹名处理整串
+            _print_report("替换规则试算", engine.explain(args.text, is_folder=args.folder))
 
-    engine.debug_match(f)
+    else:  # 未提供任何参数时给出用法提示
+        parser.print_help()  # 打印帮助信息
+

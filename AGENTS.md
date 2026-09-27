@@ -22,6 +22,7 @@
 6. **规则热加载**：修改 `rules.txt` 后无需重启，下一次扫描自动应用。
 7. **添加 Tracker 列表**：从外部源拉取并合并 Tracker，内置 1 小时缓存。
 8. **深层目录扁平化**：过滤掉不需要的文件后，将所需文件（优先级≠0）所在的深层目录逐层上移到顶级文件夹正下方。
+9. **目录逐级替换规则**：对种子内**每一级目录**（含顶级目录）应用 `replace` 替换规则，深层目录不再残留广告前缀/后缀。
 
 ---
 
@@ -49,9 +50,10 @@
 | `CONFIG` 字典 | 核心配置（host/port/username/password/rule_file/scan_interval/dry_run/log_file） |
 | `get_external_trackers()` | 合并外部 URL Tracker + qB 现有种子 Tracker，带缓存 |
 | `CancelDownload` | 取消指定文件下载（优先级设为 0） |
-| `RenameFile` | 重命名种子内单个文件 |
+| `RenameFile` | 重命名种子内单个文件（`Manager` 传入的路径已用 `remap_path` 同步为目录改名后的真实路径） |
 | `RenameTorrent` | 重命名整个种子 |
-| `RenameFolder` | 重命名种子内顶级文件夹 |
+| `RenameFolder` | 重命名种子内顶级文件夹（**`Manager` 已不再调用**，顶级目录改由 `RenameDeepFolders` 统一处理；类保留供外部调用） |
+| `RenameDeepFolders` | **目录逐层重命名**：对每一级目录（含顶级）应用 replace 规则；自顶向下 + 路径映射，返回 `旧→新` 映射 |
 | `MoveFolder` | 将深层文件夹上移一级（配合循环实现扁平化到顶级） |
 | `QBController` | 连接 qB、扫描种子、Tracker 增删查 |
 | `update_trackers()` | 增量更新 Tracker（只更新最近添加/活跃下载的种子） |
@@ -73,6 +75,8 @@
 | `extract_filename_noext()` | 提取不含扩展名的文件名 |
 | `get_top_folder()` | 获取文件列表的顶级文件夹名称 |
 | `get_keep_dirs()` | 获取所有所需文件（优先级≠0）所在的深层目录路径（去重排序，用于扁平化） |
+| `collect_dirs()` | 收集文件列表中所有目录层级路径（去重，按深度升序，父目录先于子目录） |
+| `remap_path()` | 按“旧→新”映射改写路径前缀（**支持级联**，含死循环防护） |
 | `File` 类 | 文件对象（id/name/size/priority/ext） |
 | `Torrent` 类 | 种子对象（hash/name） |
 | `Action` 类 | 操作基类（定义 `execute()` 接口） |
@@ -86,14 +90,28 @@
 | `Condition` | 匹配条件（filename/ext/min_size/max_size），条件间为 **OR** 关系 |
 | `Rule` | 规则对象（含 Condition + 原始文本） |
 | `RuleEngine` | 规则引擎：加载/热加载、匹配、重命名、调试匹配 |
-| `MockRaw` / `MockTorrent` | 测试用模拟对象（`__main__` 中用于调试） |
+| `RuleEngine.explain()` | **试算重命名**，返回 `RenameResult`（含命中规则明细），`rename()` 的唯一实现来源 |
+| `RuleEngine.explain_cancel()` | 试算取消下载规则，返回命中的规则原文列表与最终判定 |
+| `RenameStep` | 单条替换规则的命中记录（序号/规则原文/替换前/替换后） |
+| `RenameResult` | 试算结果对象（`result` / `steps` / `to_dict()` / `__str__` 可读报告） |
+| `_print_report()` / `_interactive()` | 命令行报告输出与交互式试算循环 |
+| `MockRaw` / `MockTorrent` | 测试用模拟对象（供 `explain_cancel` 与命令行 `-c` 复用） |
 
 **规则文件格式**（`rules.txt`）：
 - 每行用 `;` 分隔多个条件，命中任一条件即匹配（OR）
-- `filename:*xx*`：shell 通配符匹配文件名（转小写）
+- `filename:*xx*`：shell 通配符匹配文件名（**转小写后比对，不区分大小写**）
 - `ext:.mp4`：扩展名匹配（可逗号分隔多个）
 - `min_size:X` / `max_size:X`：大小限制（支持 K/M/G/T 单位）
-- `replace:X`：删除文件夹/文件名中的字符串（通配符 `*` 非贪婪匹配）
+- `replace:X`：删除文件夹/文件名中的字符串（**区分大小写**，通配符 `*` 为非贪婪匹配）
+
+**命令行试算工具**（只读 `rules.txt`，绝不连接 qB）：
+
+```bash
+python3 RuleEngine_utils.py "大神，【Amber】，小红书"   # 测替换规则（文件路径模式）
+python3 RuleEngine_utils.py "某名字" --folder          # 强制按文件夹名处理整串
+python3 RuleEngine_utils.py -c "广告.txt" 10M          # 测取消下载规则
+python3 RuleEngine_utils.py -i                        # 交互模式（:f / :c / :q）
+```
 
 ---
 
@@ -111,6 +129,7 @@
 1. **操作类继承 `Action` 基类**：所有操作（取消/重命名等）必须继承 `Action` 并实现 `execute(client)` 方法。
 2. **Dry Run 模式**：所有会改动 qB 的操作类中，`execute()` 开头必须检查 `CONFIG["dry_run"]`，为 True 时仅打 `[DRY]` 日志并 `return`。
 3. **规则热加载**：`RuleEngine.load()` 通过比对 `mtime` 判断是否需要重载；新增配置/规则时必须保持此机制。
+   **热加载时 `self.rules` 与 `self.replaces` 必须同时 `clear()`**（历史上只清了 `rules`，导致 `replaces` 无限累积）。
 4. **实体使用 `raw` 数据源**：`File`/`Torrent` 通过 qBittorrent API 的原始 `raw` 对象初始化。
 5. **任何修改 qB 状态的动作都需 try/except 容错**，并打 `logger.error` 日志，避免单种子异常中断整个扫描流程。
 6. **代码注释**：所有函数/类必须有中文 Docstring，关键逻辑加逐行中文注释（沿用现有风格）。
@@ -119,15 +138,40 @@
    - **禁止为追求"更优雅"而随意重构**稳定代码。
    - 修改前先充分理解现有逻辑，最小化改动范围，不要改动无关部分。
    - 保持向后兼容，不破坏已验证的功能行为。
-9. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：
-   - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式、深层目录扁平化（`get_keep_dirs`/`MoveFolder`）。
-   - 可运行 `python3 RuleEngine_utils.py` 进行规则引擎的 Mock 自测。
-   - 必要时在真实环境（或将 `CONFIG["dry_run"]` 置 `True` 的模拟环境）全流程运行 `python3 qbmanager.py` 验证。
-   - **测试未通过不得提交。**
-10. **提交规范（重要）**：测试全部通过后，**参考 `commit.sh` 中的代码提交到 git**：
+9. **`rename()` 必须复用 `explain()`（重要）**：
+   - `rename(file_path, is_folder)` 只返回 `explain(...).result`，**不得**再写第二套替换逻辑，
+     否则试算结果会与生产行为漂移，"试算通过但线上不生效"的问题会再次出现。
+   - `rename()` **只替换末级文件名**，中间目录由 `RenameDeepFolders` 负责。
+     需要"整条路径每一级都替换"时必须显式调用 `explain_deep()`，不要误改 `rename()`。
+10. **大小写约定（重要）**：`load()` 解析时**只对键（`k`）转小写**。
+    - `replace:` 的值作用于**原始文本**，因此**保持原始大小写**（`replace:ReducingMosaic` 只删完全一致的写法）。
+    - `filename:` / `ext:` 的值会再转小写，因为 `Condition.match()` 比对的是 `file.name.lower()`，**维持不区分大小写**。
+    - ⚠️ 历史上写成 `p.lower().split(":", 1)` 把值也转成了小写，导致含大写字母的 `replace` 规则静默失效，**切勿回退**。
+11. **规则去重约定（重要）**：`load()` 按“单条件”去重（`(键, 值)` 为键，列表值转元组），`replace` 按值去重。
+    - 判定结果**不受影响**（规则之间是 OR 关系，重复条件命中多次等价于命中一次）。
+    - 依赖去重的前提：`Rule` 必须传入**独立的条件字典**。历史上 `cond` 在条件循环外复用导致累积，
+      第 2 个及之后的 `Rule` 携带了前面所有条件的副本，**切勿回退**。
+    - 日志中的 `index()`/`enumerate` 序号是**去重后的序号**，不等于 `rules.txt` 行号。
+12. **目录逐层替换约定（重要）**：
+    - **必须自顶向下**（父目录先改）：qB 的 `torrents_rename_folder` 是**递归**的，改父目录会连带其下所有内容。
+    - **必须用 `remap_path` 维护路径映射**：父目录改名后子目录的 `old_path` 已失效，
+      且映射需要**级联**应用（`remap_path` 已实现级联 + 死循环防护，**切勿简化成单次替换**）。
+    - **顺序要求**：`Manager.run()` 中 `best_name` 计算 → `RenameDeepFolders` → `RenameFile` → `RenameTorrent`。
+      目录改名必须先于文件重命名，否则文件 `old_path` 失效导致重命名静默失败。
+    - **空名保护**：某级替换后为空时，顶级目录用 `best_name` 兜底，深层目录/文件名**保留原名**。
+      ⚠️ 深层目录**不可**用 `best_name` 兜底 —— 多个空目录会得到同名，导致目录被合并、结构错乱。
+13. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：
+    - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式、深层目录扁平化（`get_keep_dirs`/`MoveFolder`）、**目录逐级替换（`RenameDeepFolders`）**。
+    - **首选试算工具**：`python3 RuleEngine_utils.py "<字符串>"`（仅文件名）、`--deep`（每一级目录）、`-c "<文件名>" <大小>`（取消下载规则）。
+    - 可运行 `python3 RuleEngine_utils.py -i` 进入交互模式做批量验证。
+    - 必要时在真实环境（或将 `CONFIG["dry_run"]` 置 `True` 的模拟环境）全流程运行 `python3 qbmanager.py` 验证。
+    - **涉及 `rename()` / `remap_path` / 目录重命名的改动，必须额外做"新旧实现逐例对比"与"多级目录端到端"回归。**
+    - **测试未通过不得提交。**
+14. **提交规范（重要）**：测试全部通过后，**参考 `commit.sh` 中的代码提交到 git**：
     - 提交前先设置 Git 用户与代理（代理端口 `7890`），参考 `commit.sh` 中的 `git config` 与 `git add -A`、`git commit`、`git push origin` 流程。
     - 提交信息应清晰描述本次改动内容（避免沿用 `commit.sh` 里占位的 `"...."`，应写有意义的 message）。
     - 推送完成后按 `commit.sh` 中方式取消代理。
+    - **本项目约定：修改测试完成后默认执行提交与推送**，无需再向用户确认。
 
 ---
 
