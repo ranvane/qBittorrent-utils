@@ -26,26 +26,25 @@ from qb_utils import get_keep_dirs
 from qb_utils import collect_dirs, remap_path
 from RuleEngine_utils import RuleEngine
 
-
-
 # 配置缓存文件路径和过期时间（单位：秒，这里设置为 1 小时）
 TRACKER_CACHE_FILE = "trackers_cache.json"
-CACHE_EXPIRE_TIME = 1 * 3600 
+CACHE_EXPIRE_TIME = 1 * 3600
 NEW_TORRENT_THRESHOLD = 10 * 60  # 多少秒内的种子视为“新添加”(此处为10分钟)
 
 # 定义需要更新的下载状态
 ACTIVE_STATES = [
-    'downloading',   # 正在下载
-    'stalledDL',     # 等待下载 (通常是因为没连接上tracker)
-    'metaDL',        # 正在获取元数据
-    'forcedDL',      # 强制下载
-    'allocating',    # 正在分配磁盘空间
-    'queuedDL'       # 排队下载
+    'downloading',  # 正在下载
+    'stalledDL',  # 等待下载 (通常是因为没连接上tracker)
+    'metaDL',  # 正在获取元数据
+    'forcedDL',  # 强制下载
+    'allocating',  # 正在分配磁盘空间
+    'queuedDL'  # 排队下载
 ]
+
 
 def get_external_trackers(
     qb_controller,
-    url="https://ngosang.github.io/trackerslist/trackers_all.txt", 
+    url="https://ngosang.github.io/trackerslist/trackers_all.txt",
 ):
     """
     获取 Tracker 列表：合并外部 URL 列表 + qB 现有种子 Tracker，并处理缓存
@@ -79,9 +78,13 @@ def get_external_trackers(
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        ext_trackers = [line.strip() for line in response.text.splitlines() if line.strip()]
+        ext_trackers = [
+            line.strip() for line in response.text.splitlines()
+            if line.strip()
+        ]
         for t in ext_trackers:
-            if t.startswith(('http://', 'https://', 'udp://', 'ws://', 'wss://')):
+            if t.startswith(
+                ('http://', 'https://', 'udp://', 'ws://', 'wss://')):
                 all_trackers_set.add(t)
         logger.info(f"从网络获取了 {len(ext_trackers)} 个 Tracker")
     except Exception as e:
@@ -92,7 +95,7 @@ def get_external_trackers(
         qb_controller.connect()
         torrents = qb_controller.client.torrents_info()
         logger.info(f"正在从 {len(torrents)} 个种子中提取现有 Tracker...")
-        
+
         for torrent in torrents:
             # 注意：get_torrent_trackers 是耗时操作，每个种子都会产生一次请求
             current_trackers = qb_controller.get_torrent_trackers(torrent.hash)
@@ -105,7 +108,7 @@ def get_external_trackers(
 
     # 3. 结果去重并存入缓存
     final_list = sorted(list(all_trackers_set))
-    
+
     if final_list:
         try:
             with open(TRACKER_CACHE_FILE, 'w', encoding='utf-8') as f:
@@ -122,8 +125,6 @@ def get_external_trackers(
                 return [line.strip() for line in f if line.strip()]
 
     return final_list
-
-
 
 
 CONFIG = {
@@ -178,10 +179,8 @@ class CancelDownload(Action):
                                           file_ids=self.ids,
                                           priority=0)
             # 记录实际执行的操作
-            logger.info(
-                f"取消下载：{self.torrent.name} -> 共{len(self.ids)}文件，"
-                f"文件ID：{self.ids}"
-            )
+            logger.info(f"取消下载：{self.torrent.name} -> 共{len(self.ids)}文件，"
+                        f"文件ID：{self.ids}")
 
         except Exception as e:
             logger.error(f"取消下载 {self.ids} 失败，{e}")
@@ -380,8 +379,8 @@ class RenameDeepFolders(Action):
 
             # 调用引擎逐级替换：传 is_dir_like=True 表示末级也是目录，不拆扩展名
             new_path = self.engine.explain_deep(
-                current, is_dir_like=True, top_fallback=self.top_fallback
-            ).result
+                current, is_dir_like=True,
+                top_fallback=self.top_fallback).result
 
             if new_path == current:  # 无变化则跳过，避免无谓的 API 调用
                 continue
@@ -402,7 +401,8 @@ class RenameDeepFolders(Action):
                                               old_path=current,
                                               new_path=new_path)
                 mapping[current] = new_path  # 记录映射，供后续子层级改写前缀
-                logger.info(f"重命名目录 {self.torrent.name} : {current} -> {new_path}")
+                logger.info(
+                    f"重命名目录 {self.torrent.name} : {current} -> {new_path}")
             except Exception as e:
                 # 失败则不记录映射，后续子层级仍按原路径尝试（qB 侧可能未发生任何变更）
                 logger.error(f"重命名目录 {current} -> {new_path} 失败，{e}")
@@ -520,10 +520,6 @@ class QBController:
             logger.error(f"无法连接到qBittorrent服务器，请检查配置，{e}")
             return
 
-        
-
-        
-
     def scan(self):
         """
         扫描当前所有的种子及其文件
@@ -575,15 +571,11 @@ class QBController:
         try:
             # 直接添加，跳过逐个查询（qB API 自动去重），减少 API 调用
             tracker_string = '\n'.join(trackers)
-            self.client.torrents_add_trackers(
-                torrent_hash=torrent_hash,
-                urls=tracker_string
-            )
-            
-            logger.info(
-                 f"为种子 {torrent_hash} 添加了 {len(trackers)} 个tracker"
-             )
-            
+            self.client.torrents_add_trackers(torrent_hash=torrent_hash,
+                                              urls=tracker_string)
+
+            logger.info(f"为种子 {torrent_hash} 添加了 {len(trackers)} 个tracker")
+
         except Exception as e:
             logger.error(f"向种子 {torrent_hash} 添加tracker失败: {e}")
 
@@ -597,34 +589,29 @@ class QBController:
         try:
             # 获取当前种子的tracker列表
             current_trackers = self.get_torrent_trackers(torrent_hash)
-            
+
             if not current_trackers:
                 logger.info(f"种子 {torrent_hash} 没有任何tracker，无需移除")
                 return
-            
+
             # 逐个移除tracker
             for tracker_url in current_trackers:
                 try:
                     self.client.torrents_remove_trackers(
-                        torrent_hash=torrent_hash,
-                        urls=tracker_url
-                    )
+                        torrent_hash=torrent_hash, urls=tracker_url)
                 except Exception as e:
-                    logger.error(
-                        f"移除种子 {torrent_hash} 的tracker "
-                        f"{tracker_url} 时出错: {e}"
-                    )
-            
+                    logger.error(f"移除种子 {torrent_hash} 的tracker "
+                                 f"{tracker_url} 时出错: {e}")
+
             logger.info(
-                f"已移除种子 {torrent_hash} 的 {len(current_trackers)} 个tracker"
-            )
-            
+                f"已移除种子 {torrent_hash} 的 {len(current_trackers)} 个tracker")
+
         except Exception as e:
             logger.error(f"获取种子 {torrent_hash} 的tracker列表时出错: {e}")
 
 
-
-def update_trackers(qb_controller, new_threshold_seconds=NEW_TORRENT_THRESHOLD):
+def update_trackers(qb_controller,
+                    new_threshold_seconds=NEW_TORRENT_THRESHOLD):
     """
     只给“正在下载”或“最近new_threshold_seconds时间内添加”的种子更新 tracker
 
@@ -633,7 +620,7 @@ def update_trackers(qb_controller, new_threshold_seconds=NEW_TORRENT_THRESHOLD):
         new_threshold_seconds (int): 判定为“新添加”的时间范围（秒）
     """
     logger.info("开始增量更新种子 Tracker...")
-    
+
     # 1. 获取外部 Tracker (直接利用你已有的带缓存函数)
     external_trackers = get_external_trackers(qb_controller)
     if not external_trackers:
@@ -643,32 +630,36 @@ def update_trackers(qb_controller, new_threshold_seconds=NEW_TORRENT_THRESHOLD):
     # 2. 连接并获取所有种子信息
     qb_controller.connect()
     torrents = qb_controller.client.torrents_info()
-    
+
     now = time.time()
-    
+
     updated_count = 0
-    
+
     # 3. 遍历种子进行逻辑判断
     for torrent in torrents:
         # 条件 A: 是否处于活跃下载状态
         is_active = torrent.state in ACTIVE_STATES
-        
+
         # 条件 B: 是否为最近添加的种子
         # torrent.added_on 是 Unix 时间戳
         is_new = (now - torrent.added_on) < new_threshold_seconds
-        
+
         # if is_active: # 只更新活跃下载状态的种子
-        if is_new: # 只更新最近添加的种子
+        if is_new:  # 只更新最近添加的种子
             try:
                 # 直接添加 external_trackers
                 # qBittorrent API 会自动忽略种子中已存在的 tracker，所以不需要手动去重
-                qb_controller.add_trackers_to_torrent(torrent.hash, external_trackers)
+                qb_controller.add_trackers_to_torrent(torrent.hash,
+                                                      external_trackers)
                 updated_count += 1
-                logger.debug(f"已更新种子: {torrent.name[:30]}... (状态: {torrent.state})")
+                logger.debug(
+                    f"已更新种子: {torrent.name[:30]}... (状态: {torrent.state})")
             except Exception as e:
                 logger.error(f"更新种子 {torrent.hash} 出错: {e}")
 
-    logger.info(f"Tracker 更新任务完成：共检查 {len(torrents)} 个种子，实际更新了 {updated_count} 个符合条件的种子。")
+    logger.info(
+        f"Tracker 更新任务完成：共检查 {len(torrents)} 个种子，实际更新了 {updated_count} 个符合条件的种子。"
+    )
 
 
 def clear_all_trackers(qb_controller):
@@ -683,13 +674,13 @@ def clear_all_trackers(qb_controller):
 
     # 获取所有种子
     torrents = qb_controller.client.torrents_info()
-    
+
     # 从每个种子移除所有tracker
     for torrent in torrents:
         try:
             # 从种子移除所有tracker
             qb_controller.remove_all_trackers_from_torrent(torrent.hash)
-            
+
         except Exception as e:
             logger.error(f"清除种子 {torrent.hash} 的tracker时出错: {e}")
 
@@ -734,10 +725,12 @@ class Manager:
 
                     file = File(torrent, f)  # 创建File对象
 
-                    matched_rule = self.engine.match(file)  # 匹配规则，返回 Rule 对象或 None
+                    matched_rule = self.engine.match(
+                        file)  # 匹配规则，返回 Rule 对象或 None
                     if matched_rule:  # 如果文件匹配规则
                         cancel_ids.append(file.id)  # 将文件ID添加到取消列表
-                        self.engine.debug_match(file, matched_rule)  # 传入已匹配结果避免二次扫描
+                        self.engine.debug_match(file,
+                                                matched_rule)  # 传入已匹配结果避免二次扫描
 
                 # --------------------计算最佳名称（在目录改名之前完成）------------------------
                 # 必须在目录改名之前算，因为 choose_best_name 依赖的是尚未改动的原始路径
@@ -749,8 +742,8 @@ class Manager:
                 # 目录改名后文件的 old_path 随之变化，文件重命名必须用改名后的路径。
                 # 顶级目录若被替换规则清空，则用 best_name 兜底（由 explain_deep 内部处理）
                 dir_mapping = RenameDeepFolders(
-                    torrent, files, self.engine, top_fallback=best_name
-                ).execute(self.qb.client)
+                    torrent, files, self.engine,
+                    top_fallback=best_name).execute(self.qb.client)
 
                 # --------------------文件重命名操作------------------------------
                 for f in files:  # 再次遍历文件（此时目录可能已被改名）
@@ -763,7 +756,8 @@ class Manager:
                     old_path = remap_path(file.name, dir_mapping)
 
                     # rename() 只替换末级文件名，前缀已是最新路径，替换后仍需再过一次映射
-                    new_path = remap_path(self.engine.rename(old_path), dir_mapping)
+                    new_path = remap_path(self.engine.rename(old_path),
+                                          dir_mapping)
 
                     if new_path != old_path:  # 如果重命名后名称发生变化
                         # 执行文件重命名操作
@@ -796,10 +790,8 @@ class Manager:
                         torrent_hash=torrent.hash)
                 except Exception as e:
                     # 获取失败则回退到旧快照，仅影响本次扁平化，不影响其他种子
-                    logger.error(
-                        f"重新获取种子 {torrent.name} 文件列表失败: "
-                        f"{str(e)}，扁平化将使用旧快照"
-                    )
+                    logger.error(f"重新获取种子 {torrent.name} 文件列表失败: "
+                                 f"{str(e)}，扁平化将使用旧快照")
                     latest_files = files
 
                 top_folder = get_top_folder(latest_files)  # 获取(最新)顶级文件夹名称
@@ -822,10 +814,8 @@ class Manager:
                                            top_folder).execute(self.qb.client)
                             except Exception as e:
                                 # 捕获移动执行过程中的异常，增强容错性
-                                logger.error(
-                                    f"[MoveFolder]目录扁平化执行失败："
-                                    f"{current}，错误：{str(e)}"
-                                )
+                                logger.error(f"[MoveFolder]目录扁平化执行失败："
+                                             f"{current}，错误：{str(e)}")
                                 break  # 移动失败则放弃当前目录
                             current = moved  # 更新路径，继续下一级上移
 
@@ -840,11 +830,10 @@ def main():
     """
     manager = Manager()
     manager.run()  # 创建管理器实例并运行主循环
-    
+
     # 更新所有种子的tracker列表
     # clear_all_trackers(manager.qb) # 清除所有种子的tracker, 涉及到比较耗时，请谨慎使用
     update_trackers(manager.qb)
-    
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时
