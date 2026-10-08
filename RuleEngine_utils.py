@@ -693,6 +693,7 @@ def organize_rules(rule_file="rules.txt", max_parts=8):
     返回:
         tuple: (整理前行数, 整理后行数, 去重丢弃的条数)
     """
+    print(f"整理规则文件：{rule_file}")
     path = os.path.join(BASE_DIR, rule_file)  # 规则文件完整路径
     with open(path, encoding="utf8") as f:  # 读取当前规则文件
         lines = f.read().splitlines()  # 按行拆分
@@ -771,3 +772,4 @@ if __name__ == "__main__":
     # _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
     # _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
     _print_report("取消下载规则试算", engine.explain_cancel("《震撼精品核弹》身材超级棒的推特网红女神室外极限露出全裸旅游真-实感受世界的美好"))
+    organize_rules()
