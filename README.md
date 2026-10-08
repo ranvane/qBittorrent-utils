@@ -155,6 +155,12 @@ python3 qbmanager.py
 
 ## 📋 更新日志
 
+### 2026-10-08 — 新增 rules.txt 规则整理函数
+
+- `RuleEngine_utils.organize_rules(rule_file="rules.txt", max_parts=8)`：
+  全局去重（重复规则只保留一个）、长行拆分（每行最多 8 条）、保留开头规则说明块与各分类注释、按原分类归位，整理完成后覆盖原文件。
+- 已对 `rules.txt` 执行整理：347 条规则零丢失零新增，引擎加载结果不变（332 条取消下载 + 15 条重命名）。
+
 ### 2026-10-08 — explain_rename / explain_deep 报告同步显示行号与规则名称
 
 - `load()` 新增 `replace_lines` 映射（replace 值 -> rules.txt 行号），热加载时同步清空。

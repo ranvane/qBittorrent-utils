@@ -674,6 +674,81 @@ def _print_report(title, report):
     print(bar)  # 输出下边框
 
 
+
+def organize_rules(rule_file="rules.txt", max_parts=8):
+    """
+    整理规则文件：去重、拆长行、保留注释与分类结构，整理完成后覆盖原文件
+
+    处理规则：
+    1. 重复的规则片段（如 replace:【*】、filename:*xx*）全局只保留一个
+    2. 一行中规则过多导致过长时，拆分为多行（每行最多 max_parts 条）
+    3. 开头的 #******************规则说明*************************** 块原样保留
+    4. 每个分类开头的说明注释原样保留（以 # 开头的行都视为注释保留）
+    5. 规则按原有分类块归位，块与块之间保留一个空行
+
+    参数:
+        rule_file (str): 规则文件名（相对 BASE_DIR）
+        max_parts (int): 每行最多容纳的规则条数
+
+    返回:
+        tuple: (整理前行数, 整理后行数, 去重丢弃的条数)
+    """
+    path = os.path.join(BASE_DIR, rule_file)  # 规则文件完整路径
+    with open(path, encoding="utf8") as f:  # 读取当前规则文件
+        lines = f.read().splitlines()  # 按行拆分
+
+    out = []  # 输出行集合
+    seen = set()  # 已出现过的"键:值"规则片段，用于全局去重
+    seen_comments = set()  # 已出现过的注释行，避免重复注释块
+    buffer_parts = []  # 当前规则块累积的规则片段
+    dup_count = 0  # 去重丢弃的条数
+
+    def flush():
+        """把当前块累积的规则片段按每行 max_parts 条拆行写入 out"""
+        for i in range(0, len(buffer_parts), max_parts):  # 分块切片
+            out.append(";".join(buffer_parts[i:i + max_parts]))  # 拼成一行
+        buffer_parts.clear()  # 清空缓冲区
+
+    for raw_line in lines:  # 逐行处理
+        line = raw_line.strip()  # 去首尾空白
+
+        if line.startswith("#"):  # 注释行：先结算当前规则块，再原样保留注释
+            flush()
+            out.append(line)  # 注释行原样保留（包括分类说明与规则说明块，一个不删）
+            continue
+
+        if not line:  # 空行：先结算当前规则块，再写一个空行分隔
+            flush()
+            if out and out[-1] != "":  # 避免连续空行
+                out.append("")
+            continue
+
+        line = line.replace("；", ";")  # 全角分号转半角
+        for part in line.split(";"):  # 拆成单个规则片段
+            part = part.strip()  # 去空白
+            if not part or ":" not in part:  # 空片段或不含冒号的片段跳过
+                continue
+            if part in seen:  # 重复规则片段，丢弃
+                dup_count += 1  # 累计去重条数
+                continue
+            seen.add(part)  # 登记新规则片段
+            buffer_parts.append(part)  # 加入当前块缓冲
+
+    flush()  # 结算最后一块
+
+    # 去掉首尾多余空行，保证以单一换行结尾
+    while out and out[0] == "":
+        out.pop(0)
+    while out and out[-1] == "":
+        out.pop()
+
+    text = "\n".join(out) + "\n"  # 拼接为最终文本
+    with open(path, "w", encoding="utf8") as f:  # 覆盖写回 rules.txt
+        f.write(text)
+
+    return len(lines), len(out), dup_count  # 返回统计信息
+
+
 if __name__ == "__main__":
     """
     直接测试各类规则：每种规则都有自己的试算函数，改字符串即可
@@ -692,4 +767,4 @@ if __name__ == "__main__":
     # 直接测试：修改下面的测试字符串即可
     # _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
     # _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
-    _print_report("取消下载规则试算", engine.explain_cancel("《震撼精品核弹》身材超级棒的推特网红女神52bailibing室外极限露出全裸旅游真-实感受世界的美好."))
+    _print_report("取消下载规则试算", engine.explain_cancel("《震撼精品核弹》身材超级棒的推特网红女神室外极限露出全裸旅游真-实感受世界的美好"))
