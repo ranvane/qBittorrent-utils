@@ -675,13 +675,14 @@ def _print_report(title, report):
 
 
 
-def organize_rules(rule_file="rules.txt", max_parts=8):
+def organize_rules(rule_file="rules.txt", max_parts=8, max_len=120):
     """
     整理规则文件：去重、拆长行、保留注释与分类结构，整理完成后覆盖原文件
 
     处理规则：
     1. 重复的规则片段（如 replace:【*】、filename:*xx*）全局只保留一个
-    2. 一行中规则过多导致过长时，拆分为多行（每行最多 max_parts 条）
+    2. 一行中规则过多或规则字符串过长导致行过长时，拆分为多行
+       （每行最多 max_parts 条、且字符长度不超过 max_len）
     3. 开头的 #******************规则说明*************************** 块原样保留
     4. 每个分类开头的说明注释原样保留（以 # 开头的行都视为注释保留）
     5. 规则按原有分类块归位，块与块之间保留一个空行
@@ -689,6 +690,7 @@ def organize_rules(rule_file="rules.txt", max_parts=8):
     参数:
         rule_file (str): 规则文件名（相对 BASE_DIR）
         max_parts (int): 每行最多容纳的规则条数
+        max_len (int): 每行最长字符数（规则字符串较长时可能少于 max_parts 条即换行）
 
     返回:
         tuple: (整理前行数, 整理后行数, 去重丢弃的条数)
@@ -705,9 +707,21 @@ def organize_rules(rule_file="rules.txt", max_parts=8):
     dup_count = 0  # 去重丢弃的条数
 
     def flush():
-        """把当前块累积的规则片段按每行 max_parts 条拆行写入 out"""
-        for i in range(0, len(buffer_parts), max_parts):  # 分块切片
-            out.append(";".join(buffer_parts[i:i + max_parts]))  # 拼成一行
+        """把当前块累积的规则片段按“条数 + 字符长度”双限制拆行写入 out"""
+        line_parts = []  # 当前行正在累积的规则片段
+        line_len = 0  # 当前行已累积的字符数（含分隔符）
+        for part in buffer_parts:  # 逐条规则片段累积
+            added = len(part) + (1 if line_parts else 0)  # 本片段加入后增加的字符数（1 为分号）
+            # 条数已达上限，或加入后超过长度上限（已有内容时才换行，避免单条就超长时死循环）
+            if line_parts and (len(line_parts) >= max_parts or line_len + added > max_len):
+                out.append(";".join(line_parts))  # 当前行写出
+                line_parts = []  # 重置
+                line_len = 0  # 重置
+                added = len(part)  # 换行后本片段自身的长度
+            line_parts.append(part)  # 加入当前行
+            line_len += added  # 累计长度
+        if line_parts:  # 收尾：剩余片段成行
+            out.append(";".join(line_parts))
         buffer_parts.clear()  # 清空缓冲区
 
     for raw_line in lines:  # 逐行处理

@@ -97,7 +97,7 @@
 | `RenameStep` | 单条替换规则的命中记录（序号/规则原文/替换前/替换后） |
 | `RenameResult` | 试算结果对象（`result` / `steps` / `to_dict()` / `__str__` 可读报告） |
 | `_print_report()` | 统一的试算报告输出函数 |
-| `organize_rules()` | 整理 rules.txt：规则去重、长行拆分（每行最多 8 条）、保留规则说明块与各分类注释、按原分类归位，原地覆盖写回 |
+| `organize_rules()` | 整理 rules.txt：规则去重、长行拆分（每行最多 8 条且不超过 120 字符）、保留规则说明块与各分类注释、按原分类归位，原地覆盖写回 |
 | `MockRaw` / `MockTorrent` | 测试用模拟对象（供 `explain_cancel` 复用） |
 
 **规则文件格式**（`rules.txt`）：
