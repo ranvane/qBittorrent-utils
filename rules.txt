@@ -20,6 +20,7 @@ ext:.url;ext:.htm;ext:.html;ext:.gif;ext:.rar;ext:.zip;ext:.7z;ext:.chm
 ext:.apk;ext:.mhtml;ext:.mht;ext:.txt;ext:.pptx;ext:.pdf;ext:.torrent;ext:.exe
 ext:.dat
 
+# filename:X  - 取消下载文件名匹配模式X的文件（支持通配符，如filename:*.txt）
 filename:*av美女直播*;filename:*乱伦社区*;filename:*線上觀看*;filename:*發布*;filename:*腾讯涩漫*;filename:*换妻乱伦*;filename:*乱伦换妻*;filename:*亂倫換妻*
 filename:*com.mp4*;filename:*cc.mp4;filename:*成人社区*;filename:*獵豔傳奇*;filename:*猎艳传奇*;filename:*斗罗大陆*;filename:*外网天堂*;filename:*速波网*
 filename:*最新资讯*;filename:*JavLand*;filename:*王子能拯救她解放她.mp4*;filename:*任君選妃.mp4*;filename:*精爆骑*;filename:*更多游戏*;filename:*微密圈*;filename:*经典品牌*
@@ -57,7 +58,6 @@ filename:____海角*.mp4;filename:*男娘日记*;filename:*成人色游.mp4;file
 filename:*PornHub*;filename:*重口社*;filename:*TikTock成人版*;filename:*真实乱伦分享交流中心*;filename:*排行.mp4*;filename:約会.mp4;filename:*黄果短剧*;filename:*看片平台*
 filename:*杏吧视频*;filename:*吃瓜庫*;filename:*超燃超爆*;filename:*資源啓動*;filename:*漫画*;filename:*暗網蘿莉*;filename:*好色傳媒*;filename:*糖心VLOG*
 filename:*奶视频*
-
 # 图片
 filename:*｜.jpg;filename:*｜.png;filename:*❤.png*;filename:*❤.jpg*;filename:*发布*jpg;filename:*记录美好*.jpg;filename:*.mp4.jpg;filename:*记录美好*.png
 filename:*记录美好*.gif;filename:*每日更新*.jpg;filename:*每日更新*.png;filename:*每日更新*.gif;filename:*百万*.jpg;filename:*AI科技*.jpg;filename:*AI科技*.png;filename:*AI科技*.gif
