@@ -760,6 +760,9 @@ if __name__ == "__main__":
         engine.explain_rename("字符串")   # 重命名替换规则（只换末级文件名）
         engine.explain_deep("目录/文件")    # 逐级替换规则（每一级目录都替换）
         engine.explain_cancel("文件名")     # 取消下载规则
+
+    其他工具函数:
+        organize_rules()                  # 整理 rules.txt：去重、拆长行、保留注释与分类
     """
     engine = RuleEngine("rules.txt")  # 创建规则引擎并加载规则（只读，不连接 qB）
     engine.load()
