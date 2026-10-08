@@ -18,5 +18,4 @@ echo -e "\n推送远程仓库完成.................\n"
 echo  "取消Git代理"
 git config --global --unset http.proxy
 git config --global --unset https.proxy
-read -n 1 -s
-echo
+
