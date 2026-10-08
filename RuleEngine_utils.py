@@ -29,6 +29,7 @@ class Condition:
 
         # 预编译文件名通配符模式为正则表达式，避免每次匹配时重复编译
         self._compiled_filename = []
+        self.last_match = None  # 最近一次 match 命中的具体条件描述（如 filename:*xx*）
         if self.filename:
             for p in self.filename:
                 try:
@@ -51,21 +52,25 @@ class Condition:
         try:
             if self._compiled_filename:  # 使用预编译的正则进行文件名匹配
                 fname_lower = file.name.lower()
-                for compiled in self._compiled_filename:
+                for compiled, pat in zip(self._compiled_filename, self.filename):
                     if compiled and compiled.match(fname_lower):
+                        self.last_match = f"filename:{pat}"  # 记录命中的文件名模式
                         return True
 
             if self.ext:  # 如果设置了扩展名匹配条件
                 for e in self.ext:  # 遍历所有扩展名
                     if file.ext == e:  # 检查文件扩展名是否匹配
+                        self.last_match = f"ext:{e}"  # 记录命中的扩展名
                         return True
 
             if (self.min_size
                     and file.size < self.min_size):  # 如果设置了最小大小限制且文件小于限制
+                self.last_match = f"min_size:{self.min_size}"  # 记录命中的最小大小条件
                 return True
 
             if (self.max_size
                     and file.size > self.max_size):  # 如果设置了最大大小限制且文件大于限制
+                self.last_match = f"max_size:{self.max_size}"  # 记录命中的最大大小条件
                 return True
 
             return False  # 文件不满足任何条件
@@ -81,16 +86,21 @@ class Rule:
     包含一个条件对象，定义了如何匹配文件的规则
     """
 
-    def __init__(self, cond, raw=None):
+    def __init__(self, cond, raw=None, text=None, line_no=0):
         """
         初始化规则对象
 
         参数:
             cond (dict): 条件配置字典
-            raw (str, optional): 原始规则文本（用于调试），默认值为None
+            raw (str, optional): 原始规则整行文本（用于调试），默认值为None
+            text (str, optional): 该条件在规则行中的原始片段（如 "filename:*萝莉岛*"）
+            line_no (int, optional): 该规则在 rules.txt 中的行号（从 1 开始）
         """
         self.cond = Condition(cond)
-        self.raw = raw  # 原始规则文本（用于调试）
+        self.raw = raw  # 原始规则整行文本（用于调试）
+        self.text = text  # 该条件的原始片段（用于报告具体命中的规则名称）
+        self.line_no = line_no  # 所在行号
+        self.last_match = None  # 最近一次 match 命中的具体条件描述
 
     def match(self, file):
         """
@@ -103,6 +113,7 @@ class Rule:
             Rule or None: 匹配成功返回自身，否则返回None
         """
         if self.cond.match(file):  # 调用条件对象的match方法
+            self.last_match = self.cond.last_match  # 透传命中的具体条件描述
             return self  # 匹配成功返回自身（含 raw 等信息）
         return None
 
@@ -321,7 +332,7 @@ class RuleEngine:
         dup_replaces = 0  # 被去重丢弃的重复替换规则计数
 
         with open(self.file, encoding="utf8") as f:  # 以UTF-8编码打开规则文件
-            for line in f:  # 逐行读取文件
+            for line_no, line in enumerate(f, 1):  # 逐行读取文件并记录行号
                 line = line.strip()  # 去除首尾空白字符
 
                 if not line or line.startswith("#"):  # 如果是空行或注释行
@@ -383,7 +394,7 @@ class RuleEngine:
                     # 导致同一行的第 2 个及之后的 Rule 携带了前面所有条件的累积副本
                     # （条件本应彼此独立、OR 关系，累积会让后面的 Rule 意外变宽）。
                     # 现改为每个条件使用独立字典，去重键也才能准确对应单个条件。
-                    self.rules.append(Rule({k: v}, raw=line))  # 创建独立条件对象并加入规则列表
+                    self.rules.append(Rule({k: v}, raw=line, text=p.strip(), line_no=line_no))  # 创建独立条件对象并加入规则列表
 
         # 加载统计信息：若有重复项被丢弃，在日志中明确说明，避免"规则莫名不生效"的误判
         dedup_note = ""
@@ -578,7 +589,9 @@ class RuleEngine:
         steps = []  # 命中规则列表
         for i, r in enumerate(self.rules, 1):  # 遍历全部取消下载规则
             if r.match(file):  # 该规则命中当前文件
-                steps.append(RenameStep(i, len(self.rules), r.raw, name, "取消下载"))  # 记录规则原文
+                # 报告里展示：所在行号、规则名称（条件片段）、实际命中的条件描述
+                pattern = f"规则位于 rules.txt 第{r.line_no}行，规则名称：{r.text}（命中：{r.last_match}）"
+                steps.append(RenameStep(i, len(self.rules), pattern, name, "取消下载"))  # 记录命中规则
 
         # 汇总结果：命中任意一条即判定为“取消下载”，与 match() 的首个命中语义一致
         final = "取消下载（不下载此文件）" if steps else "保留下载"
@@ -670,6 +683,6 @@ if __name__ == "__main__":
     engine.load()
 
     # 直接测试：修改下面的测试字符串即可
-    _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
-    _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
-    _print_report("取消下载规则试算", engine.explain_cancel("测试字符串"))
+    # _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
+    # _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
+    _print_report("取消下载规则试算", engine.explain_cancel("《震撼精品核弹》身材超级棒的推特网红女神52bailibing室外极限露出全裸旅游真-实感受世界的美好."))

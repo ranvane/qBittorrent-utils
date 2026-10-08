@@ -155,6 +155,12 @@ python3 qbmanager.py
 
 ## 📋 更新日志
 
+### 2026-10-08 — explain_cancel 报告显示具体命中条件与行号
+
+- `Condition.match()` 记录具体命中的条件；`Rule` 新增 `text`（条件片段）、`line_no`（rules.txt 行号）、`last_match`。
+- `explain_cancel()` 报告中的规则改为输出：`规则位于 rules.txt 第x行，规则名称：filename:*萝莉岛*（命中：filename:*萝莉岛*）`，
+  不再把整行多条条件挤成一行。
+
 ### 2026-10-08 — 试算方式改为直接调用（去除命令行）
 
 - `if __name__ == "__main__":` 不再解析命令行参数，改为直接调用各类规则试算函数：

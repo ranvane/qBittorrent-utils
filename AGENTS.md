@@ -93,7 +93,7 @@
 | `RuleEngine.explain()` | **试算重命名**，返回 `RenameResult`（含命中规则明细），`rename()` 的唯一实现来源 |
 | `RuleEngine.explain_rename()` | **重命名试算的便捷别名**，等同于 `explain()`，与 `explain_cancel` 语义对称，便于直接测试 |
 | `RuleEngine.explain_deep()` | **逐级替换试算**（每一级目录 + 文件名都应用规则），供 `qbmanager.RenameDeepFolders` 与测试复用 |
-| `RuleEngine.explain_cancel()` | 试算取消下载规则，返回命中的规则原文列表与最终判定 |
+| `RuleEngine.explain_cancel()` | 试算取消下载规则，返回命中规则（含 rules.txt 行号与具体命中条件）与最终判定 |
 | `RenameStep` | 单条替换规则的命中记录（序号/规则原文/替换前/替换后） |
 | `RenameResult` | 试算结果对象（`result` / `steps` / `to_dict()` / `__str__` 可读报告） |
 | `_print_report()` | 统一的试算报告输出函数 |
