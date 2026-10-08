@@ -532,6 +532,20 @@ class RuleEngine:
             dir_part=dir_part,  # 未参与替换的目录部分
         )
 
+    def explain_rename(self, file_path: str, is_folder=False) -> RenameResult:
+        """
+        试算“重命名替换规则”，返回命中的规则列表
+        是 explain() 的便捷别名，语义与 explain_cancel 对称，便于直接测试
+
+        参数:
+            file_path (str): 待处理字符串（文件夹名或文件路径）
+            is_folder (bool, optional): True 表示按文件夹名处理
+
+        返回:
+            RenameResult: 含原始值、最终值、命中规则列表的解释结果对象
+        """
+        return self.explain(file_path, is_folder=is_folder)
+
     def rename(self, file_path: str, is_folder=False) -> str:
         """
         根据通配符替换规则重命名 BT 种子文件路径中的文件名
@@ -640,108 +654,22 @@ def _print_report(title, report):
     print(bar)  # 输出下边框
 
 
-def _interactive(engine):
-    """
-    交互式试算模式
-    循环读取使用者输入的字符串并立即给出替换/取消下载判定，直到输入 quit 退出
-
-    参数:
-        engine (RuleEngine): 已加载规则的引擎实例
-    """
-    print("=" * 60)
-    print("规则引擎交互式试算（直接粘贴种子名/文件名即可）")
-    print("  :r <字符串>  测试重命名替换规则（按文件夹名）")
-    print("  :f <字符串>  测试重命名替换规则（按文件路径，含目录）")
-    print("  :c <文件名>  测试取消下载规则")
-    print("  :q          退出")
-    print("=" * 60)
-
-    while True:  # 持续接收输入
-        try:
-            line = input("> ").strip()  # 读取一行输入并去空白
-        except (EOFError, KeyboardInterrupt):  # 处理 Ctrl+C / Ctrl+D
-            print()  # 换行避免与提示符粘连
-            break  # 退出循环
-
-        if not line:  # 空行直接跳过
-            continue
-
-        if line in (":q", ":quit", "quit", "exit"):  # 退出指令
-            break
-
-        # 解析前缀，支持三种写法：
-        #   1) ":r " / ":f " / ":c "  —— 带冒号的两字符模式
-        #   2) "r " / "f " / "c "     —— 无冒号简写（字母后必须跟空格，避免误吃首字）
-        #   3) 无前缀                 —— 整行即待测字符串，默认按文件夹名试算
-        if line[:2] in (":r", ":f", ":c"):  # 情形 1：带冒号
-            mode, text = line[1].lower(), line[2:].strip()  # 取冒号后的字母作为模式
-        elif len(line) > 1 and line[0] in "rfc" and line[1] == " ":  # 情形 2：无冒号简写
-            mode, text = line[0].lower(), line[1:].strip()  # 取首字母作为模式
-        else:  # 情形 3：无前缀，整行都是待测字符串（此处不做任何截断）
-            mode, text = "r", line.strip()  # 默认按文件夹名试算
-
-        try:
-            if mode == "f":  # :f 开头 —— 按文件路径测试替换
-                _print_report("替换规则试算（文件路径）", engine.explain(text, is_folder=False))
-            elif mode == "c":  # :c 开头 —— 测试取消下载规则
-                _print_report("取消下载规则试算", engine.explain_cancel(text, parse_size("10M")))
-            else:  # 其余情况（含 :r 与无前缀）均按文件夹名试算
-                _print_report("替换规则试算（文件夹名）", engine.explain(text, is_folder=True))
-        except Exception as e:  # 任何异常都不应中断交互循环
-            print(f"试算出错: {e}")
-
-
 if __name__ == "__main__":
     """
-    命令行入口：支持“传字符串立即出结果”与“交互模式”两种用法
+    直接测试各类规则：每种规则都有自己的试算函数，改字符串即可
 
     用法:
-        python3 RuleEngine_utils.py "大神，【Amber】，小红书"   # 测替换规则（仅文件名）
-        python3 RuleEngine_utils.py "目录/文件.mp4" --deep     # 测替换规则（每一级目录都替换）
-        python3 RuleEngine_utils.py "目录" --folder            # 强制按文件夹名处理整串
-        python3 RuleEngine_utils.py "【下课后】/a.mp4" --deep --best "兜底名"  # 顶级目录兜底
-        python3 RuleEngine_utils.py -c "某文件.mp4"            # 测取消下载规则（大小默认 10M）
-        python3 RuleEngine_utils.py -c "某文件.mp4" 500K       # 指定大小
-        python3 RuleEngine_utils.py -i                         # 进入交互模式
+        python3 RuleEngine_utils.py
+
+    规则试算函数一览:
+        engine.explain_rename("字符串")   # 重命名替换规则（只换末级文件名）
+        engine.explain_deep("目录/文件")    # 逐级替换规则（每一级目录都替换）
+        engine.explain_cancel("文件名")     # 取消下载规则
     """
-    import argparse  # 仅命令行模式需要，延迟导入避免污染运行环境
-
-    parser = argparse.ArgumentParser(  # 定义命令行参数
-        description="qBittorrent 规则引擎试算工具",
-    )
-    parser.add_argument("text", nargs="?", help="待试算的字符串")  # 位置参数：待测字符串
-    parser.add_argument("--folder", action="store_true", help="强制把整串当作文件夹名处理")
-    parser.add_argument("--deep", action="store_true", help="逐级替换：路径中每一级目录都应用替换规则")
-    parser.add_argument("--best", metavar="NAME", help="配合 --deep：顶级目录替换为空时的兜底名")
-    parser.add_argument("-c", "--cancel", metavar="NAME", help="测试取消下载规则（传文件名）")
-    parser.add_argument("-s", "--size", default="10M", help="配合 -c 使用的文件大小，默认 10M")
-    parser.add_argument("-i", "--interactive", action="store_true", help="进入交互式试算模式")
-
-    args = parser.parse_args()  # 解析命令行参数
-
-    # 创建规则引擎对象并加载规则（只读操作，不会触碰 qBittorrent）
-    engine = RuleEngine("rules.txt")
+    engine = RuleEngine("rules.txt")  # 创建规则引擎并加载规则（只读，不连接 qB）
     engine.load()
 
-    if args.interactive:  # 交互模式
-        _interactive(engine)
-
-    elif args.cancel:  # 取消下载规则试算
-        _print_report(
-            "取消下载规则试算",
-            engine.explain_cancel(args.cancel, parse_size(args.size)),
-        )
-
-    elif args.text:  # 重命名替换规则试算
-        if args.deep:  # 逐级替换模式：每一级目录 + 文件名都应用规则
-            _print_report(
-                "替换规则试算（逐级）",
-                engine.explain_deep(args.text, top_fallback=args.best),
-            )
-        else:  # 默认按文件路径模式（能同时显示"目录部分不参与替换"这一关键提示）
-            # 显式指定 --folder 时按文件夹名处理整串
-            _print_report("替换规则试算", engine.explain(args.text, is_folder=args.folder))
-
-    else:  # 未提供任何参数时给出用法提示
-        parser.print_help()  # 打印帮助信息
-
+    # 直接测试：修改下面的测试字符串即可
+    _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
+    _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
+    _print_report("取消下载规则试算", engine.explain_cancel("测试字符串"))

@@ -91,11 +91,13 @@
 | `Rule` | 规则对象（含 Condition + 原始文本） |
 | `RuleEngine` | 规则引擎：加载/热加载、匹配、重命名、调试匹配 |
 | `RuleEngine.explain()` | **试算重命名**，返回 `RenameResult`（含命中规则明细），`rename()` 的唯一实现来源 |
+| `RuleEngine.explain_rename()` | **重命名试算的便捷别名**，等同于 `explain()`，与 `explain_cancel` 语义对称，便于直接测试 |
+| `RuleEngine.explain_deep()` | **逐级替换试算**（每一级目录 + 文件名都应用规则），供 `qbmanager.RenameDeepFolders` 与测试复用 |
 | `RuleEngine.explain_cancel()` | 试算取消下载规则，返回命中的规则原文列表与最终判定 |
 | `RenameStep` | 单条替换规则的命中记录（序号/规则原文/替换前/替换后） |
 | `RenameResult` | 试算结果对象（`result` / `steps` / `to_dict()` / `__str__` 可读报告） |
-| `_print_report()` / `_interactive()` | 命令行报告输出与交互式试算循环 |
-| `MockRaw` / `MockTorrent` | 测试用模拟对象（供 `explain_cancel` 与命令行 `-c` 复用） |
+| `_print_report()` | 统一的试算报告输出函数 |
+| `MockRaw` / `MockTorrent` | 测试用模拟对象（供 `explain_cancel` 复用） |
 
 **规则文件格式**（`rules.txt`）：
 - 每行用 `;` 分隔多个条件，命中任一条件即匹配（OR）
@@ -104,13 +106,17 @@
 - `min_size:X` / `max_size:X`：大小限制（支持 K/M/G/T 单位）
 - `replace:X`：删除文件夹/文件名中的字符串（**区分大小写**，通配符 `*` 为非贪婪匹配）
 
-**命令行试算工具**（只读 `rules.txt`，绝不连接 qB）：
+**直接试算（只读 `rules.txt`，绝不连接 qB）**：每类规则都有自己的试算函数，
+修改 `RuleEngine_utils.py` 末尾 `if __name__ == "__main__":` 中的测试字符串后直接运行：
+
+```python
+engine.explain_rename("字符串")   # 重命名替换规则（只换末级文件名）
+engine.explain_deep("目录/文件")   # 逐级替换规则（每一级目录都替换）
+engine.explain_cancel("文件名")    # 取消下载规则
+```
 
 ```bash
-python3 RuleEngine_utils.py "大神，【Amber】，小红书"   # 测替换规则（文件路径模式）
-python3 RuleEngine_utils.py "某名字" --folder          # 强制按文件夹名处理整串
-python3 RuleEngine_utils.py -c "广告.txt" 10M          # 测取消下载规则
-python3 RuleEngine_utils.py -i                        # 交互模式（:f / :c / :q）
+python3 RuleEngine_utils.py
 ```
 
 ---
@@ -162,8 +168,7 @@ python3 RuleEngine_utils.py -i                        # 交互模式（:f / :c /
       ⚠️ 深层目录**不可**用 `best_name` 兜底 —— 多个空目录会得到同名，导致目录被合并、结构错乱。
 13. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：
     - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式、深层目录扁平化（`get_keep_dirs`/`MoveFolder`）、**目录逐级替换（`RenameDeepFolders`）**。
-    - **首选试算工具**：`python3 RuleEngine_utils.py "<字符串>"`（仅文件名）、`--deep`（每一级目录）、`-c "<文件名>" <大小>`（取消下载规则）。
-    - 可运行 `python3 RuleEngine_utils.py -i` 进入交互模式做批量验证。
+    - **首选试算方式**：直接修改 `RuleEngine_utils.py` 末尾 `__main__` 中的测试字符串，依次调用 `explain_rename` / `explain_deep` / `explain_cancel`，运行 `python3 RuleEngine_utils.py` 查看命中报告。
     - 必要时在真实环境（或将 `CONFIG["dry_run"]` 置 `True` 的模拟环境）全流程运行 `python3 qbmanager.py` 验证。
     - **涉及 `rename()` / `remap_path` / 目录重命名的改动，必须额外做"新旧实现逐例对比"与"多级目录端到端"回归。**
     - **测试未通过不得提交。**
