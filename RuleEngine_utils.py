@@ -286,6 +286,7 @@ class RuleEngine:
         self.rules = []  # 规则列表
 
         self.replaces = []  # 替换规则列表
+        self.replace_lines = {}  # 替换规则值 -> 其在 rules.txt 中的行号
 
         self.last_mtime = 0  # 上次修改时间戳
 
@@ -323,6 +324,7 @@ class RuleEngine:
         # 【BUG修复】replaces 列表此前从未被清空，热加载时会与旧规则无限累积
         # （表现为日志里的"重命名规则"数量只增不减，且每次改规则文件都会翻倍）
         self.replaces.clear()  # 清空现有替换规则列表
+        self.replace_lines.clear()  # 同步清空行号映射
 
         # 去重用的集合：记录已出现过的条件/替换规则，避免同一规则被重复加载
         # （rules.txt 是长期手工维护的文件，复制粘贴很容易产生重复项）
@@ -366,6 +368,7 @@ class RuleEngine:
 
                         seen_replaces.add(v)  # 登记该替换规则
                         self.replaces.append(v)  # 添加到替换规则列表
+                        self.replace_lines[v] = line_no  # 记录该替换规则所在行号
                         continue
 
                     v = v.lower()  # 其余匹配条件作用于小写化的文件名（见 Condition.match），保持原有行为
@@ -468,7 +471,9 @@ class RuleEngine:
             for i, pattern in enumerate(self.replaces, 1):  # 逐条应用替换规则
                 after = remove_by_match(current, pattern)  # 计算替换结果
                 if after != current:  # 有变化才算命中
-                    steps.append(RenameStep(i, total, pattern, current, after))  # 追加命中记录
+                    # 报告中展示该替换规则所在行号与规则名称，便于定位 rules.txt
+                    pattern_desc = f"规则位于 rules.txt 第{self.replace_lines.get(pattern, '?')}行，规则名称：replace:{pattern}"
+                    steps.append(RenameStep(i, total, pattern_desc, current, after))  # 追加命中记录
                     current = after  # 更新当前文本，继续下一条规则
 
             # 【空名保护】替换后该级变为空时不能提交给 qB（会产生 "//" 或无扩展名的空文件名）
@@ -527,7 +532,9 @@ class RuleEngine:
         for i, pattern in enumerate(self.replaces, 1):  # 按顺序逐条应用替换规则
             after = remove_by_match(current, pattern)  # 计算应用该规则后的文本
             if after != current:  # 只有文本发生变化才算“命中”
-                steps.append(RenameStep(i, total, pattern, current, after))  # 记录这一步
+                # 报告中展示该替换规则所在行号与规则名称，便于定位 rules.txt
+                pattern_desc = f"规则位于 rules.txt 第{self.replace_lines.get(pattern, '?')}行，规则名称：replace:{pattern}"
+                steps.append(RenameStep(i, total, pattern_desc, current, after))  # 记录这一步
                 current = after  # 更新当前文本，继续下一条规则
 
         if is_folder:  # 文件夹模式：仅做空白清理

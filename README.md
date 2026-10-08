@@ -155,6 +155,11 @@ python3 qbmanager.py
 
 ## 📋 更新日志
 
+### 2026-10-08 — explain_rename / explain_deep 报告同步显示行号与规则名称
+
+- `load()` 新增 `replace_lines` 映射（replace 值 -> rules.txt 行号），热加载时同步清空。
+- `explain()` / `explain_deep()` 命中记录改为：`规则位于 rules.txt 第x行，规则名称：replace:XXX`，与 `explain_cancel()` 格式一致。
+
 ### 2026-10-08 — explain_cancel 报告显示具体命中条件与行号
 
 - `Condition.match()` 记录具体命中的条件；`Rule` 新增 `text`（条件片段）、`line_no`（rules.txt 行号）、`last_match`。
