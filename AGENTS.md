@@ -21,8 +21,9 @@
 5. **中文字符最多优先作为资源名称**。
 6. **规则热加载**：修改 `rules.txt` 后无需重启，下一次扫描自动应用。
 7. **添加 Tracker 列表**：从外部源拉取并合并 Tracker，内置 1 小时缓存。
-8. **深层目录扁平化**：过滤掉不需要的文件后，将所需文件（优先级≠0）所在的深层目录逐层上移到顶级文件夹正下方。
+8. **深层目录扁平化**：过滤掉不需要的文件后，将所需文件（优先级≠0）所在的深层目录一步移到顶级文件夹正下方（由深到浅，目标重名自动避让）。
 9. **目录逐级替换规则**：对种子内**每一级目录**（含顶级目录）应用 `replace` 替换规则，深层目录不再残留广告前缀/后缀。
+10. **重名安全**：清洗后同名时自动生成 `名称_2` 后缀避让，避免 qB 409 冲突与目录被合并；后缀保证下一轮不再被规则改写（不振荡）。
 
 ---
 
@@ -50,11 +51,11 @@
 | `CONFIG` 字典 | 核心配置（host/port/username/password/rule_file/scan_interval/dry_run/log_file） |
 | `get_external_trackers()` | 合并外部 URL Tracker + qB 现有种子 Tracker，带缓存 |
 | `CancelDownload` | 取消指定文件下载（优先级设为 0） |
-| `RenameFile` | 重命名种子内单个文件（`Manager` 传入的路径已用 `remap_path` 同步为目录改名后的真实路径） |
+| `RenameFile` | 重命名种子内单个文件（`Manager` 已不再调用，统一重命名由 `RenameDeepFolders` 处理；类保留供外部调用） |
 | `RenameTorrent` | 重命名整个种子 |
 | `RenameFolder` | 重命名种子内顶级文件夹（**`Manager` 已不再调用**，顶级目录改由 `RenameDeepFolders` 统一处理；类保留供外部调用） |
-| `RenameDeepFolders` | **目录逐层重命名**：对每一级目录（含顶级）应用 replace 规则；自顶向下 + 路径映射，返回 `旧→新` 映射 |
-| `MoveFolder` | 将深层文件夹上移一级（配合循环实现扁平化到顶级） |
+| `RenameDeepFolders` | **统一重命名**：一次生成全量计划（文件 + 每一级目录，含顶级），先改文件、后改目录（由深到浅）；计划阶段做重名避让，执行阶段对 409 冲突重新避让重试 |
+| `MoveFolder` | 移动文件夹；传入 `new_path` 时按计划一步到位，不传则兼容旧的“上移一级”行为 |
 | `QBController` | 连接 qB、扫描种子、Tracker 增删查 |
 | `update_trackers()` | 增量更新 Tracker（只更新最近添加/活跃下载的种子） |
 | `clear_all_trackers()` | 清除所有种子的 Tracker（谨慎使用，耗时） |
@@ -73,10 +74,19 @@
 | `sanitize_name()` | 清理文件名（移除所有空白字符） |
 | `chinese_count()` | 统计中文字符数量 |
 | `extract_filename_noext()` | 提取不含扩展名的文件名 |
-| `get_top_folder()` | 获取文件列表的顶级文件夹名称 |
-| `get_keep_dirs()` | 获取所有所需文件（优先级≠0）所在的深层目录路径（去重排序，用于扁平化） |
+| `get_top_folders()` | 获取文件列表中**所有**顶级文件夹名称（多根种子，去重保序） |
+| `get_top_folder()` | 获取首个顶级文件夹名称（兼容旧调用） |
+| `get_keep_dirs()` | 获取所有所需文件（优先级≠0）所在的深层目录路径（去重排序） |
 | `collect_dirs()` | 收集文件列表中所有目录层级路径（去重，按深度升序，父目录先于子目录） |
-| `remap_path()` | 按“旧→新”映射改写路径前缀（**支持级联**，含死循环防护） |
+| `remap_path()` | 按“旧→新”映射改写路径前缀（**支持级联**，含死循环防护）；新流程已不再使用，保留供外部调用 |
+| `split_parent_leaf()` | 将路径拆分为“父目录 + 末级名称”，统一处理反斜杠 |
+| `join_path()` | 拼接父目录与末级名称 |
+| `path_depth()` | 计算相对路径层级深度 |
+| `is_safe_name()` | 校验名称可作为单级名称（拒绝空名/`.`/`..`/路径分隔符/控制字符） |
+| `unique_name()` | 生成同目录内不冲突且**幂等**的避让名（`名称_2`，避开 `(*)`、`【*】` 类规则） |
+| `order_renames()` | 同目录改名排序：处理 `A→B、B→C` 链式改名与互换改名（必要时临时名中转） |
+| `build_rename_plan()` | **统一重命名计划**（纯计算）：文件与目录的计划、重名避让、空名保护 |
+| `build_flatten_plan()` | **扁平化计划**：深层目录一步移到顶级，由深到浅 + 重名避让 |
 | `File` 类 | 文件对象（id/name/size/priority/ext） |
 | `Torrent` 类 | 种子对象（hash/name） |
 | `Action` 类 | 操作基类（定义 `execute()` 接口） |
@@ -159,14 +169,23 @@ python3 RuleEngine_utils.py
     - 依赖去重的前提：`Rule` 必须传入**独立的条件字典**。历史上 `cond` 在条件循环外复用导致累积，
       第 2 个及之后的 `Rule` 携带了前面所有条件的副本，**切勿回退**。
     - 日志中的 `index()`/`enumerate` 序号是**去重后的序号**，不等于 `rules.txt` 行号。
-12. **目录逐层替换约定（重要）**：
-    - **必须自顶向下**（父目录先改）：qB 的 `torrents_rename_folder` 是**递归**的，改父目录会连带其下所有内容。
-    - **必须用 `remap_path` 维护路径映射**：父目录改名后子目录的 `old_path` 已失效，
-      且映射需要**级联**应用（`remap_path` 已实现级联 + 死循环防护，**切勿简化成单次替换**）。
-    - **顺序要求**：`Manager.run()` 中 `best_name` 计算 → `RenameDeepFolders` → `RenameFile` → `RenameTorrent`。
-      目录改名必须先于文件重命名，否则文件 `old_path` 失效导致重命名静默失败。
-    - **空名保护**：某级替换后为空时，顶级目录用 `best_name` 兜底，深层目录/文件名**保留原名**。
+12. **重命名计划约定（重要）**：
+    - **必须先算完整计划再执行**：`build_rename_plan(files, engine, top_fallback)` 纯计算产出
+      `{"files": [...], "dirs": [...]}`，`RenameDeepFolders` 只按计划调用 qB。
+      禁止再恢复“边改边算 + `remap_path` 前缀映射”的旧做法（会重复应用替换规则、路径失效）。
+    - **执行顺序：文件先、目录后（目录由深到浅）**。qB 的 `torrents_rename_folder` 是**递归**的，
+      深到浅改名时每级路径都基于“原父目录”，父目录最后改会递归带走已改好的子目录。
+    - **重名必须避让**：`replace` 常把不同条目清洗成同名，qB 会返回 409，目录同名会被**合并**。
+      计划阶段用 `unique_name` 生成 `名称_2`；执行阶段命中 409 时重新拉取真实列表避让后重试一次。
+    - **避让后缀必须幂等**：候选名要过 `_is_stable_name`（再跑一遍替换规则不变）。
+      ⚠️ 不能用 `名称 (2)`：`rules.txt` 里的 `replace:(*)` / `replace:【*】` 会把它删掉，导致每分钟改名振荡。
+    - **空名/非法名保护**：某级替换为空时，顶级目录用 `best_name` 兜底，深层目录/文件**保留原名**；
+      `is_safe_name` 拒绝空名、`.`、`..`、路径分隔符与控制字符。
       ⚠️ 深层目录**不可**用 `best_name` 兜底 —— 多个空目录会得到同名，导致目录被合并、结构错乱。
+    - **扁平化同样计划式**：`build_flatten_plan` 由深到浅、一步移到顶级目录下，并做目标重名避让；
+      多根种子用 `get_top_folders` 逐个处理。
+    - **顺序要求**：`Manager.run()` 中 `best_name` 计算 → `RenameDeepFolders` → `RenameTorrent`
+      → `CancelDownload` → 扁平化（扁平化前必须重新拉取文件列表）。
 13. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：
     - 测试重点：规则过滤、文件/种子/文件夹重命名、中文名称选择、规则热加载、Tracker 更新、Dry Run 模式、深层目录扁平化（`get_keep_dirs`/`MoveFolder`）、**目录逐级替换（`RenameDeepFolders`）**。
     - **首选试算方式**：直接修改 `RuleEngine_utils.py` 末尾 `__main__` 中的测试字符串，依次调用 `explain_rename` / `explain_deep` / `explain_cancel`，运行 `python3 RuleEngine_utils.py` 查看命中报告。

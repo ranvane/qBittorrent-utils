@@ -537,6 +537,13 @@ class RuleEngine:
                 steps.append(RenameStep(i, total, pattern_desc, current, after))  # 记录这一步
                 current = after  # 更新当前文本，继续下一条规则
 
+        # 【空名保护】若替换把文件名主干全部删掉，不能返回 ".mp4" 这种只剩扩展名的名字，
+        # 因此回退为原文件名（等价于该文件不改名）；文件夹模式则返回空串，
+        # 交由调用方（如 choose_best_name）自行跳过该候选。
+        if not sanitize_name(current):
+            if not is_folder:
+                current = name  # 文件：保留原名主干
+
         if is_folder:  # 文件夹模式：仅做空白清理
             result = sanitize_name(current)  # 清理首尾与中间空白
         else:  # 文件模式：清理空白后拼回扩展名与原目录
@@ -785,5 +792,5 @@ if __name__ == "__main__":
     # 直接测试：修改下面的测试字符串即可
     # _print_report("重命名替换规则试算", engine.explain_rename("测试字符串"))
     # _print_report("逐级替换规则试算", engine.explain_deep("测试字符串"))
-    _print_report("取消下载规则试算", engine.explain_cancel("《震撼精品核弹》身材超级棒的推特网红女神室外极限露出全裸旅游真-实感受世界的美好"))
+    _print_report("取消下载规则试算", engine.explain_cancel("《云盘高质泄密》露脸才是王道！国语对话，能挤出奶水的哺乳期骚少妇与纹身男真实偸情性爱，各种啪啪口交往逼洞里尿尿"))
     organize_rules()
