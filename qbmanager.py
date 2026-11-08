@@ -24,7 +24,7 @@ from loguru import logger
 from qb_utils import get_top_folders, File, Torrent, Action, choose_best_name
 from qb_utils import build_flatten_plan
 from qb_utils import build_rename_plan, split_parent_leaf, unique_name
-from qb_utils import join_path
+from qb_utils import join_path, _path_parts
 from RuleEngine_utils import RuleEngine
 
 # 配置缓存文件路径和过期时间（单位：秒，这里设置为 1 小时）
@@ -232,8 +232,8 @@ class RenameFile(Action):
             logger.info(
                 f"重命名文件 {self.torrent.name} : {self.old} -> {self.new}")
         except Exception as e:
-            # logger.error(f"重命名文件 {self.old} -> {self.new} 失败，{e}")
-            return
+            # 此处必须记录日志：静默吞掉会让“改名没生效”无从排查
+            logger.error(f"重命名文件 {self.old} -> {self.new} 失败，{e}")
 
 
 class RenameTorrent(Action):
@@ -366,14 +366,17 @@ class RenameDeepFolders(Action):
         """
         读取某个目录下当前实际占用的名称（小写集合）
 
-        用于 409 冲突后重新避让，避免仅依赖可能已过期的文件快照。
+        用于 409 冲突后重新避让。⚠️ 必须同时包含**文件与目录**：
+        qB 的 files 接口只返回文件，若只统计文件末尾段，
+        目录与目录重名时占用集里根本没有该目录名，避让会算出同一个名字，
+        重试依旧 409。因此这里把每个文件路径的每一级目录名也登记进来。
 
         参数:
             client: qBittorrent 客户端
             parent (str): 相对目录路径（顶级用 ""）
 
         返回:
-            set: 该目录下已占用名称的小写集合
+            set: 该目录下已占用名称的小写集合（文件 + 目录）
         """
         try:
             raw_files = client.torrents_files(torrent_hash=self.hash)
@@ -382,10 +385,35 @@ class RenameDeepFolders(Action):
 
         used = set()
         for raw in raw_files:
-            file_parent, leaf = split_parent_leaf(raw.name)
-            if file_parent == parent:
-                used.add(leaf.lower())
+            parts = _path_parts(raw.name)
+            # 登记该文件路径上的每一级目录名（i 为目录在 parts 中的下标）
+            for i in range(len(parts) - 1):
+                dir_parent = "/".join(parts[:i]) if i else ""
+                if dir_parent == parent:
+                    used.add(parts[i].lower())
+            # 登记文件本身的末级名称
+            if len(parts) >= 1:
+                file_parent = "/".join(parts[:-1])
+                if file_parent == parent:
+                    used.add(parts[-1].lower())
         return used
+
+    @staticmethod
+    def _is_conflict(error):
+        """
+        判断异常是否为 qB 的重名冲突（HTTP 409）
+
+        Conflict409Error 的文本是 "Conflict"，不含数字 409，
+        而某些封装/代理可能只留下状态码，因此两者都匹配（不区分大小写）。
+
+        参数:
+            error (Exception): 捕获到的异常
+
+        返回:
+            bool: 是冲突类错误返回 True
+        """
+        text = f"{type(error).__name__} {error}".lower()
+        return "409" in text or "conflict" in text
 
     def _do_rename(self, client, old_path, new_path, is_dir):
         """
@@ -412,7 +440,7 @@ class RenameDeepFolders(Action):
             return True
         except Exception as e:
             # 仅冲突类错误值得重试；其他错误（路径不存在等）直接判定失败
-            if "409" not in str(e) and "onflict" not in str(e):
+            if not self._is_conflict(e):
                 logger.error(f"重命名{'目录' if is_dir else '文件'} "
                              f"{old_path} -> {new_path} 失败，{e}")
                 return False
@@ -422,6 +450,9 @@ class RenameDeepFolders(Action):
         used = self._occupied_names(client, parent)
         used.discard(split_parent_leaf(old_path)[1].lower())  # 自己不算冲突
         retry_leaf = unique_name(leaf, used, is_dir=is_dir, engine=self.engine)
+        if retry_leaf is None:  # 无稳定可用名，放弃本次改名，避免振荡
+            logger.warning(f"重命名 {old_path} -> {new_path} 冲突，且无可用避让名，跳过")
+            return False
         retry_path = join_path(parent, retry_leaf)
 
         try:
@@ -514,7 +545,7 @@ class MoveFolder(Action):
         返回:
             str: 上移一级后的路径 "顶级/末级"；若层级已足够浅（<=2级）则返回旧路径本身
         """
-        parts = old.split("/")  # 将完整路径切分为各层段
+        parts = old.replace("\\", "/").split("/")  # 统一分隔符后切分为各层段
 
         if len(parts) <= 2:  # 层级不超过两级则无需上提
             return old
@@ -597,14 +628,22 @@ class QBController:
         """
         扫描当前所有的种子及其文件
         生成器函数，逐个返回种子和其对应的文件列表
+
+        ⚠️ 单个种子取文件失败（路径异常、种子刚被删除等）必须跳过并继续，
+        否则生成器抛异常会中断整个 for 循环，导致后续种子全部不处理。
         """
         torrents = self.client.torrents_info()  # 获取所有种子信息
 
         for t in torrents:  # 遍历所有种子
             torrent = Torrent(t)  # 创建Torrent对象
 
-            files = self.client.torrents_files(
-                torrent_hash=t.hash)  # 获取种子的所有文件
+            try:
+                files = self.client.torrents_files(
+                    torrent_hash=t.hash)  # 获取种子的所有文件
+            except Exception as e:
+                # 单个种子读取失败不影响其他种子
+                logger.error(f"获取种子 {torrent.name} 文件列表失败，跳过：{e}")
+                continue
 
             yield torrent, files  # 生成种子和文件的元组
 
@@ -788,77 +827,96 @@ class Manager:
             self.engine.load()  # 加载最新规则（热加载）
             logger.info("开始扫描所有种子....")
             for torrent, files in self.qb.scan():  # 扫描所有种子
-                cancel_ids = []  # 存储需要取消下载的文件ID
-
-                # --------------------规则匹配（只读，不改动任何状态）------------------------
-                for f in files:  # 遍历种子中的所有文件
-                    # 跳过优先级为0的文件（不下载），无需创建 File 对象
-                    if f.priority == 0:
-                        continue
-
-                    file = File(torrent, f)  # 创建File对象
-
-                    matched_rule = self.engine.match(
-                        file)  # 匹配规则，返回 Rule 对象或 None
-                    if matched_rule:  # 如果文件匹配规则
-                        cancel_ids.append(file.id)  # 将文件ID添加到取消列表
-                        self.engine.debug_match(file,
-                                                matched_rule)  # 传入已匹配结果避免二次扫描
-
-                # --------------------计算最佳名称（在目录改名之前完成）------------------------
-                # 必须在目录改名之前算，因为 choose_best_name 依赖的是尚未改动的原始路径
-                best_name = choose_best_name(self.engine, torrent,
-                                             files)  # 选择最佳种子名称
-
-                # --------------------统一重命名（文件 + 目录）------------------------
-                # 计划式重命名：先算完整计划（含冲突避让），再先改文件、后改目录（由深到浅）。
-                # 不再需要 remap_path 前缀映射，避免重复应用替换规则和路径失效。
-                # 顶级目录若被替换规则清空，则用 best_name 兜底（由 build_rename_plan 内部处理）
-                RenameDeepFolders(
-                    torrent, files, self.engine,
-                    top_fallback=best_name).execute(self.qb.client)
-
-                # --------------------种子重命名------------------------------
-                if (best_name and best_name != torrent.name):  # 如果最佳名称
-                    # 与当前名称不同
-                    # 执行种子重命名操作
-                    RenameTorrent(torrent, best_name).execute(self.qb.client)
-
-                # 说明：顶级目录的重命名已由上面的 RenameDeepFolders 统一处理
-                # （所有层级都应用 replace 替换规则，顶级目录替换为空时才回退到 best_name），
-                # 因此这里不再单独调用 RenameFolder，避免与逐层替换重复/冲突。
-                # RenameFolder 类仍保留，便于外部单独调用或将来调整策略。
-
-                # --------------------取消下载------------------------------
-                if cancel_ids:  # 如果有需要取消下载的文件
-                    # 执行取消下载操作
-                    CancelDownload(torrent, cancel_ids).execute(self.qb.client)
-
-                # --------------------移动深层目录到顶级（扁平化）------------------------------
-                # 过滤掉不需要的文件后，把所需文件所在的深层目录直接移到顶级目录下
-                # 注意：必须重新获取最新文件列表！前面的重命名/取消下载已经改变了真实路径与优先级，
-                # 旧快照会导致路径漂移（404）或误判过滤文件
+                # 单个种子出错不能中断整轮扫描（AGENTS.md 设计约定第 5 条）：
+                # 例如某个种子路径异常、API 偶发失败，其余种子仍应继续处理
                 try:
-                    # 重新获取该种子的最新文件列表（反映重命名与取消下载后的真实状态）
-                    latest_files = self.qb.client.torrents_files(
-                        torrent_hash=torrent.hash)
-                except Exception as e:
-                    # 获取失败则回退到旧快照，仅影响本次扁平化，不影响其他种子
-                    logger.error(f"重新获取种子 {torrent.name} 文件列表失败: "
-                                 f"{str(e)}，扁平化将使用旧快照")
-                    latest_files = files
-
-                # 单个种子可能包含多个顶级目录（多根种子），逐个处理
-                for top_folder in get_top_folders(latest_files):
-                    # 由深到浅、一步到位的扁平化计划（含目标重名避让）
-                    for old_dir, new_dir in build_flatten_plan(latest_files,
-                                                               top_folder,
-                                                               engine=self.engine):
-                        MoveFolder(torrent, old_dir,
-                                   top_folder).execute(self.qb.client)
+                    self._process_torrent(torrent, files)
+                except Exception:
+                    logger.error(f"处理种子 {torrent.name} 失败：\n"
+                                 f"{traceback.format_exc()}")
+                    continue
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
+
+    def _process_torrent(self, torrent, files):
+        """
+        处理单个种子：规则匹配 → 重命名 → 取消下载 → 扁平化
+
+        参数:
+            torrent (Torrent): 种子对象
+            files (list): 该种子的文件对象列表（原始快照）
+        """
+        cancel_ids = []  # 存储需要取消下载的文件ID
+
+        # --------------------规则匹配（只读，不改动任何状态）------------------------
+        for f in files:  # 遍历种子中的所有文件
+            # 跳过优先级为0的文件（不下载），无需创建 File 对象
+            if f.priority == 0:
+                continue
+
+            file = File(torrent, f)  # 创建File对象
+
+            matched_rule = self.engine.match(
+                file)  # 匹配规则，返回 Rule 对象或 None
+            if matched_rule:  # 如果文件匹配规则
+                cancel_ids.append(file.id)  # 将文件ID添加到取消列表
+                self.engine.debug_match(file,
+                                        matched_rule)  # 传入已匹配结果避免二次扫描
+
+        # --------------------计算最佳名称（在目录改名之前完成）------------------------
+        # 必须在目录改名之前算，因为 choose_best_name 依赖的是尚未改动的原始路径
+        best_name = choose_best_name(self.engine, torrent,
+                                     files)  # 选择最佳种子名称
+
+        # --------------------统一重命名（文件 + 目录）------------------------
+        # 计划式重命名：先算完整计划（含冲突避让），再先改文件、后改目录（由深到浅）。
+        # 不再需要 remap_path 前缀映射，避免重复应用替换规则和路径失效。
+        # 顶级目录若被替换规则清空，则用 best_name 兜底（由 build_rename_plan 内部处理）
+        RenameDeepFolders(
+            torrent, files, self.engine,
+            top_fallback=best_name).execute(self.qb.client)
+
+        # --------------------种子重命名------------------------------
+        if (best_name and best_name != torrent.name):  # 如果最佳名称
+            # 与当前名称不同
+            # 执行种子重命名操作
+            RenameTorrent(torrent, best_name).execute(self.qb.client)
+
+        # 说明：顶级目录的重命名已由上面的 RenameDeepFolders 统一处理
+        # （所有层级都应用 replace 替换规则，顶级目录替换为空时才回退到 best_name），
+        # 因此这里不再单独调用 RenameFolder，避免与逐层替换重复/冲突。
+        # RenameFolder 类仍保留，便于外部单独调用或将来调整策略。
+
+        # --------------------取消下载------------------------------
+        if cancel_ids:  # 如果有需要取消下载的文件
+            # 执行取消下载操作
+            CancelDownload(torrent, cancel_ids).execute(self.qb.client)
+
+        # --------------------移动深层目录到顶级（扁平化）------------------------------
+        # 过滤掉不需要的文件后，把所需文件所在的深层目录直接移到顶级目录下
+        # 注意：必须重新获取最新文件列表！前面的重命名/取消下载已经改变了真实路径与优先级，
+        # 旧快照会导致路径漂移（404）或误判过滤文件
+        try:
+            # 重新获取该种子的最新文件列表（反映重命名与取消下载后的真实状态）
+            latest_files = self.qb.client.torrents_files(
+                torrent_hash=torrent.hash)
+        except Exception as e:
+            # 获取失败则回退到旧快照，仅影响本次扁平化，不影响其他种子
+            logger.error(f"重新获取种子 {torrent.name} 文件列表失败: "
+                         f"{str(e)}，扁平化将使用旧快照")
+            latest_files = files
+
+        # 单个种子可能包含多个顶级目录（多根种子），逐个处理
+        for top_folder in get_top_folders(latest_files):
+            # 由深到浅、一步到位的扁平化计划（含目标重名避让）
+            # ⚠️ 必须把计划里的 new_dir 传给 MoveFolder：
+            #    否则避让名被丢弃，实际仍按“上移一级”算目标，重名时又会撞 409
+            for old_dir, new_dir in build_flatten_plan(latest_files,
+                                                       top_folder,
+                                                       engine=self.engine):
+                MoveFolder(torrent, old_dir, top_folder,
+                           new_path=new_dir).execute(self.qb.client)
 
 
 def main():

@@ -2,6 +2,8 @@ import os
 import re
 import pathlib
 
+from loguru import logger
+
 
 def parse_size(size):
     """
@@ -127,6 +129,8 @@ def _path_parts(name):
     返回:
         tuple: 去掉空层级后的路径段元组
     """
+    # PurePosixPath 会自动丢弃空段与 "."，这里再显式过滤一次，
+    # 保持与 pathlib 行为一致；".." 必须保留，否则会静默改变路径语义
     return tuple(part for part in pathlib.PurePosixPath(
         name.replace("\\", "/")).parts if part not in ("", "."))
 
@@ -182,8 +186,10 @@ def collect_dirs(files, min_depth=1):
     dirs = set()  # 存储目录路径（去重）
 
     for f in files:  # 遍历所有文件
-        # 路径包含多级目录时才需要收集（单文件的种子没有中间目录）
-        parts = pathlib.PurePosixPath(f.name.replace("\\", "/")).parts
+        # 必须与 split_parent_leaf 共用同一套解析（_path_parts），
+        # 否则 "a//b"、"a/./b" 这类路径会产生带空段/点段的目录名，
+        # 与后续按同一路径拆分出的父目录对不上，导致计划与执行不一致
+        parts = _path_parts(f.name)
 
         # 末级是文件名不参与收集，因此只取第 1 层到第 len(parts)-1 层
         # 并用 min_depth 过滤掉不需要处理的浅层（如顶级目录可传 2 跳过）
@@ -192,7 +198,7 @@ def collect_dirs(files, min_depth=1):
 
     # 按 (深度, 路径) 排序：深度小（靠上）的目录在前，保证自顶向下处理
     # 这样父目录改名后，qB 会递归带动子目录，届时只需处理子目录自身的新名字
-    return sorted(dirs, key=lambda p: (p.count("/") + 1, p))
+    return sorted(dirs, key=lambda p: (path_depth(p), p))
 
 
 def remap_path(path, mapping):
@@ -325,12 +331,15 @@ def unique_name(name, used_lower, is_dir=False, engine=None):
         engine (RuleEngine, optional): 提供时校验候选名幂等（见 _is_stable_name）
 
     返回:
-        str: 可用的唯一名称；输入为空时原样返回
+        str | None: 可用的唯一名称；无法得到稳定名称时返回 None，
+                    调用方应放弃改名（保留原名），而不是硬提交一个冲突名
     """
     if not name:  # 空名不做处理，交由调用方兜底
         return name
 
     if name.lower() not in used_lower:  # 本身不冲突，直接使用
+        # 不做幂等限制：多轮 cron 扫描会自然收敛（如 A【x】B -> AB -> A），
+        # 只有“避让生成的后缀”才需要幂等，否则会每轮被规则删掉又加回形成振荡
         return name
 
     if is_dir:
@@ -347,9 +356,9 @@ def unique_name(name, used_lower, is_dir=False, engine=None):
             return candidate
         seq += 1
 
-    # 找不到稳定候选（用户的 replace 规则能删掉所有后缀）时放弃改名：
-    # 保持原名最多只是本轮跳过，绝不会形成“改名→被规则改回→再改名”的振荡
-    return name
+    # 找不到稳定候选（用户的 replace 规则能删掉所有后缀）时返回 None：
+    # 调用方保留原名最多只是本轮跳过，绝不会形成振荡，也不会提交冲突名
+    return None
 
 
 def is_safe_name(name):
@@ -485,6 +494,11 @@ def order_renames(pairs, is_dir=False):
                 base, ext = os.path.splitext(leaf)
                 temp_leaf = unique_name(f"{base}__tmp__{ext}", occupied,
                                         is_dir=False)
+            if temp_leaf is None:
+                # 极端情况下连临时名都无法生成：直接放弃该条，
+                # 避免把 None 拼进路径后抛 TypeError，拖垮整个种子
+                pending.pop(index)
+                continue
             temp_path = join_path(parent, temp_leaf)
             result.append((old, temp_path))
             occupied.add(temp_leaf.lower())
@@ -540,64 +554,96 @@ def build_rename_plan(files, engine, top_fallback=None):
         """获取指定目录已占用的名称集合（小写）"""
         return used_by_dir.setdefault(parent, set())
 
-    # ---------- 第一阶段：目录（逐层两遍分配）----------
-    # 同一父目录下的条目层级必然相同，因此按深度逐层处理即可：
-    #   第 1 遍：先让“不改名”的目录占位；
-    #   第 2 遍：再给改名的目录分配避让名。
-    # 顺序不能颠倒，否则 A->B 可能撞上本身就叫 B 且不改名的目录。
-    resolved_dir = {}  # 目录原路径 -> 最终完整路径（父目录部分已解析）
-
-    by_depth = {}  # 深度 -> 该层目录列表（保持 collect_dirs 的顺序）
+    # ---------- 预计算：目录分组、文件分组 ----------
+    by_depth = {}  # 目录深度 -> 该层目录（保持 collect_dirs 的顺序）
     for old_dir in dirs:
         by_depth.setdefault(path_depth(old_dir), []).append(old_dir)
 
-    for depth in sorted(by_depth):  # 自顶向下
-        level_dirs = by_depth[depth]
-        planned = {}  # 目录原路径 -> 计划末级名
+    # 文件条目：(原路径, 原父目录, 原名, 替换名, 优先级)
+    file_entries = []
+    for f in files:
+        parent, leaf = split_parent_leaf(f.name)
+        file_entries.append((f.name, parent, leaf,
+                             _proposed_file_leaf(engine, leaf),
+                             getattr(f, "priority", 1)))
 
-        for old_dir in level_dirs:  # 第 1 遍：登记计划名与不改名条目
+    # ⚠️ 关键：文件与其"父目录下的子目录"处于同一层。
+    # 它们共享同一个名称空间，必须一起占位、一起分配，
+    # 否则会出现“目录 A【x】 改成 A，而同目录下已有文件 A”的漏判（qB 409）。
+    files_by_depth = {}  # 层级 -> 该层文件（父目录深度 + 1）
+    for item in file_entries:
+        parent = item[1]
+        depth = path_depth(parent) + 1 if parent else 1
+        files_by_depth.setdefault(depth, []).append(item)
+
+    resolved_dir = {}  # 目录原路径 -> 最终完整路径（父目录部分已解析）
+    file_plan = []  # (旧路径, 新路径)
+
+    max_depth = max(list(by_depth) + list(files_by_depth) + [0])
+
+    for depth in range(1, max_depth + 1):
+        level_dirs = by_depth.get(depth, [])
+        level_files = files_by_depth.get(depth, [])
+        if not level_dirs and not level_files:
+            continue
+
+        # 本层目录：先算出各自的最终父目录（父目录必然在更浅层，已解析完毕）
+        planned_dirs = {}
+        for old_dir in level_dirs:
             parent, leaf = split_parent_leaf(old_dir)
             parent_final = resolved_dir.get(parent, parent) if parent else ""
             proposed = _proposed_dir_leaf(engine, leaf, parent, top_fallback)
-            planned[old_dir] = (parent_final, leaf, proposed)
-            if proposed == leaf:  # 不改名的先占位
+            planned_dirs[old_dir] = (parent_final, leaf, proposed)
+
+        # 本层文件：同样解析出最终父目录
+        planned_files = []
+        for old_path, parent, leaf, proposed, priority in level_files:
+            parent_final = resolved_dir.get(parent, parent) if parent else ""
+            planned_files.append((old_path, parent, parent_final, leaf,
+                                  proposed, priority))
+
+        # 第 1 遍：所有“不改名”的条目先占位（目录 + 文件同层一起）
+        # 优先级为 0 的文件不下载也不改名，但它仍占用文件名，必须占位
+        for parent_final, leaf, proposed in planned_dirs.values():
+            if proposed == leaf:
+                reserve(parent_final, leaf)
+        for _, _, parent_final, leaf, proposed, priority in planned_files:
+            if proposed == leaf or priority == 0:
                 reserve(parent_final, leaf)
 
-        for old_dir in level_dirs:  # 第 2 遍：分配改名条目
-            parent_final, leaf, proposed = planned[old_dir]
-            if proposed == leaf:
+        # 第 2 遍：分配改名条目。目录先于文件分配，保证目录优先保留期望名
+        for old_dir in level_dirs:
+            parent_final, leaf, proposed = planned_dirs[old_dir]
+            if proposed == leaf:  # 不改名
                 resolved_dir[old_dir] = join_path(parent_final, leaf)
                 continue
+
             new_leaf = unique_name(proposed, taken(parent_final),
                                    is_dir=True, engine=engine)
+            if new_leaf is None:
+                # 无可用避让名：保留原名，避免提交冲突名或形成振荡
+                logger.debug(f"目录 '{old_dir}' 无可用避让名，保留原名")
+                reserve(parent_final, leaf)
+                resolved_dir[old_dir] = join_path(parent_final, leaf)
+                continue
+
             reserve(parent_final, new_leaf)
             resolved_dir[old_dir] = join_path(parent_final, new_leaf)
 
-    # ---------- 第二阶段：文件（同样两遍分配）----------
-    file_entries = []  # (原路径, 原父目录, 最终父目录, 原名, 替换名, 优先级)
-    for f in files:
-        parent, leaf = split_parent_leaf(f.name)
-        parent_final = resolved_dir.get(parent, parent) if parent else ""
-        proposed = _proposed_file_leaf(engine, leaf)
-        file_entries.append((f.name, parent, parent_final, leaf, proposed,
-                             getattr(f, "priority", 1)))
+        for old_path, parent, parent_final, leaf, proposed, priority in planned_files:
+            if priority == 0 or proposed == leaf:  # 无需改名
+                continue
 
-    for _, _, parent_final, leaf, proposed, priority in file_entries:
-        # 不改名的文件、以及优先级为 0（不下载、不改名）的文件先占位
-        if proposed == leaf or priority == 0:
-            reserve(parent_final, leaf)
+            new_leaf = unique_name(proposed, taken(parent_final),
+                                   is_dir=False, engine=engine)
+            if new_leaf is None:
+                logger.debug(f"文件 '{old_path}' 无可用避让名，保留原名")
+                reserve(parent_final, leaf)
+                continue
 
-    file_plan = []
-    for old_path, parent, parent_final, leaf, proposed, priority in file_entries:
-        if priority == 0 or proposed == leaf:  # 无需改名
-            continue
-
-        new_leaf = unique_name(proposed, taken(parent_final),
-                               is_dir=False, engine=engine)
-        reserve(parent_final, new_leaf)
-
-        # 文件改名在目录改名之前执行，因此这里必须使用原父目录（当前真实路径）
-        file_plan.append((old_path, join_path(parent, new_leaf)))
+            reserve(parent_final, new_leaf)
+            # 文件改名在目录改名之前执行，因此这里必须使用原父目录（当前真实路径）
+            file_plan.append((old_path, join_path(parent, new_leaf)))
 
     # 同目录内可能存在 A->B 且 B->C 的链式改名，统一排序后再执行，避免撞名
     file_plan = _order_plan_by_parent(file_plan)
@@ -666,6 +712,8 @@ def build_flatten_plan(files, top_folder, engine=None):
         return []
 
     # 顶级目录下已占用的名称（文件与目录共用名称空间）
+    # 只需登记“顶级目录的直接子项”（parts[1]）：更深层目录名并不占用顶级命名空间，
+    # 把它们也算进来会导致自身被误判重名（如把 根一/甲/乙 的 “乙” 改名为 “乙_2”）
     reserved = set()
     for f in files:
         parts = _path_parts(f.name)
@@ -685,7 +733,11 @@ def build_flatten_plan(files, top_folder, engine=None):
     plan = []
     for deep_dir in candidates:
         leaf = _path_parts(deep_dir)[-1]  # 末级目录名才是要保留的名称
-        new_leaf = unique_name(leaf, reserved, is_dir=True, engine=engine)  # 规避顶级目录下的重名
+        new_leaf = unique_name(leaf, reserved, is_dir=True, engine=engine)
+        if new_leaf is None:
+            # 无稳定可用名：保留原名，跳过该目录（避免冲突/振荡）
+            reserved.add(leaf.lower())
+            continue
         reserved.add(new_leaf.lower())
         plan.append((deep_dir, join_path(top_folder, new_leaf)))
 

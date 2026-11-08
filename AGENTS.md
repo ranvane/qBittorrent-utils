@@ -177,13 +177,30 @@ python3 RuleEngine_utils.py
       深到浅改名时每级路径都基于“原父目录”，父目录最后改会递归带走已改好的子目录。
     - **重名必须避让**：`replace` 常把不同条目清洗成同名，qB 会返回 409，目录同名会被**合并**。
       计划阶段用 `unique_name` 生成 `名称_2`；执行阶段命中 409 时重新拉取真实列表避让后重试一次。
+    - **文件与目录共用同一名称空间，必须同层一起分配**：按深度逐层处理时，
+      该层的“目录”和“文件”要一起做两遍分配（先让不改名的占位，再分配改名的），
+      ⚠️ 不能“先全部目录、再全部文件”：否则 `目录【广告】A -> A` 会撞上同层已存在的文件 `A`（409）。
+    - **409 检测必须匹配类名/文本**：`qbittorrentapi.Conflict409Error` 的字符串是 `"Conflict"`，
+      **不含数字 409**，只判断 `"409" in str(e)` 会让重试逻辑永不触发（见 `RenameDeepFolders._is_conflict`）。
     - **避让后缀必须幂等**：候选名要过 `_is_stable_name`（再跑一遍替换规则不变）。
       ⚠️ 不能用 `名称 (2)`：`rules.txt` 里的 `replace:(*)` / `replace:【*】` 会把它删掉，导致每分钟改名振荡。
+      若 20 次尝试都拿不到“不冲突且幂等”的名称，`unique_name` 返回 `None`，调用方必须**保留原名放弃改名**，
+      ⚠️ 不可回退成原候选名（会 409）或硬拼后缀（会振荡）。
     - **空名/非法名保护**：某级替换为空时，顶级目录用 `best_name` 兜底，深层目录/文件**保留原名**；
       `is_safe_name` 拒绝空名、`.`、`..`、路径分隔符与控制字符。
       ⚠️ 深层目录**不可**用 `best_name` 兜底 —— 多个空目录会得到同名，导致目录被合并、结构错乱。
     - **扁平化同样计划式**：`build_flatten_plan` 由深到浅、一步移到顶级目录下，并做目标重名避让；
       多根种子用 `get_top_folders` 逐个处理。
+      ⚠️ 计划里的 `new_dir` **必须**传给 `MoveFolder(..., new_path=new_dir)`，
+      否则避让名被丢弃、实际按“上移一级”算目标，重名时又会撞 409。
+      ⚠️ 占用集只登记“顶级目录的直接子项”（`parts[1]`）：更深层目录名不占用顶级命名空间。
+    - **路径解析必须统一走 `_path_parts`**：`collect_dirs` / `split_parent_leaf` / `get_keep_dirs` /
+      `_occupied_names` / `build_flatten_plan` 都要用它，否则 `a//b`、`a/./b`、反斜杠路径会算出不一致的层级。
+    - **容错边界（重要）**：
+      - `QBController.scan()` 单个种子取文件失败必须 `continue`，否则生成器抛异常会中断整轮扫描；
+      - `Manager.run()` 对每个种子单独 try/except（`_process_torrent`），单种子故障不影响其他种子；
+      - `RuleEngine.load()` 遇到非法 `min_size/max_size`（如 `10GBx`）只跳过该条并告警，
+        ⚠️ 不能让 `parse_size` 的 `ValueError` 冒出去导致整份规则加载失败。
     - **顺序要求**：`Manager.run()` 中 `best_name` 计算 → `RenameDeepFolders` → `RenameTorrent`
       → `CancelDownload` → 扁平化（扁平化前必须重新拉取文件列表）。
 13. **修改后必须完整测试（重要）**：每次功能修改完成后，都必须**完整测试所有功能**，确保改动没有破坏既有行为：

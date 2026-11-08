@@ -374,7 +374,14 @@ class RuleEngine:
                     v = v.lower()  # 其余匹配条件作用于小写化的文件名（见 Condition.match），保持原有行为
 
                     if k in ("min_size", "max_size"):  # 如果是大小相关字段
-                        v = parse_size(v)  # 解析大小字符串
+                        # rules.txt 是手写维护的，大小写错（如 "10GBx"）不能让整份规则加载失败，
+                        # 否则本次运行所有过滤/重命名规则全部失效。这里只跳过单条非法规则。
+                        try:
+                            v = parse_size(v)  # 解析大小字符串
+                        except ValueError:
+                            logger.warning(f"跳过非法大小规则：rules.txt 第{line_no}行 "
+                                           f"{p.strip()!r}")
+                            continue
 
                     if k == "ext":  # 如果是扩展名字段
                         v = [x.strip() for x in v.split(",")]  # 以逗号分割并去除空白字符
