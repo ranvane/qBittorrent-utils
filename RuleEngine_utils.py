@@ -306,6 +306,7 @@ class RuleEngine:
 # filename:X  - 取消下载文件名匹配模式X的文件（支持通配符，如filename:*.txt）
 # ext:X       - 取消下载指定扩展名的文件（如ext:.mp4表示取消下载MP4文件）
 # replace:X   - 删除文件夹和文件名中的字符串
+# replace:^正则 - 以^开头时整条按正则处理（如replace:^[0-9]+[-_. ]* 删除开头的数字前缀）
 # 
 # 多个条件可以用分号分隔，如：ext:.mkv;min_size:500M，取消下载只要满足其中任意一个条件
 # 表示取消下载扩展名为.mkv且大小小于500MB的文件

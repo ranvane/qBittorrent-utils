@@ -43,6 +43,7 @@
 ├── trackers_cache.json    # Tracker 缓存文件（脚本自动生成，1 小时过期）
 ├── state.json             # 处理状态缓存（脚本自动生成，种子 hash -> 结构指纹）
 ├── test_state_gate.py     # 状态门控回归测试（pytest）
+├── test_remove_by_match.py # 文本替换（通配符/正则）回归测试（pytest）
 ├── commit.sh              # 一键提交推送脚本（含代理配置）
 └── AGENTS.md              # 本文件（AI 协作规范）
 ```
@@ -103,7 +104,7 @@
 | `Torrent` 类 | 种子对象（hash/name） |
 | `Action` 类 | 操作基类（定义 `execute()` 接口） |
 | `choose_best_name()` | 从候选名称中选中文最多者作为最佳种子名 |
-| `remove_by_match()` | 根据通配符模式删除文本匹配内容 |
+| `remove_by_match()` | 删除文本中的匹配内容：`*` 为非贪婪通配符；**pattern 以 `^` 开头时整条按正则处理** |
 
 ### 4.3 `RuleEngine_utils.py` — 规则引擎
 
@@ -128,6 +129,9 @@
 - `ext:.mp4`：扩展名匹配（可逗号分隔多个）
 - `min_size:X` / `max_size:X`：大小限制（支持 K/M/G/T 单位）
 - `replace:X`：删除文件夹/文件名中的字符串（**区分大小写**，通配符 `*` 为非贪婪匹配）
+- `replace:^正则`：pattern 以 `^` 开头时**整条按正则处理**，用于通配符表达不了的场景，
+  例如删除开头数字前缀 `replace:^[0-9]+[-_. ]*`（`1754-资源名` → `资源名`）。
+  正则写坏时退回字面量删除并告警，不会中断整轮处理。
 
 **直接试算（只读 `rules.txt`，绝不连接 qB）**：每类规则都有自己的试算函数，
 修改 `RuleEngine_utils.py` 末尾 `if __name__ == "__main__":` 中的测试字符串后直接运行：

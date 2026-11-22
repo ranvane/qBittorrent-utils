@@ -860,16 +860,32 @@ def choose_best_name(engine, torrent, files):
 def remove_by_match(text: str, pattern: str) -> str:
     """
     根据通配符模式删除文本中的匹配内容
+
     通配符规则：
-        * 表示任意字符（可贪婪匹配）
-    
+        * 表示任意字符（非贪婪，等价于正则 .*?）
+        其余字符一律按字面量处理
+
+    正则扩展：
+        pattern 以 ^ 开头时，整条 pattern 按**正则**处理，用于通配符表达不了的场景，
+        例如删除开头的数字前缀：^[0-9]+[-_. ]*
+        （以 ^ 开头在旧语义里是被转义的普通字符，现有规则不会以 ^ 开头，故完全向后兼容）
+
     参数:
         text (str): 原文本
-        pattern (str): 通配符模式，例如 "@*", "*@", "【*】"
-    
+        pattern (str): 通配符模式，例如 "@*", "*@", "【*】", "^[0-9]+-"
+
     返回:
         str: 删除匹配后的文本
     """
+    # 以 ^ 开头的模式按正则处理（只删开头这类需求，通配符做不到）
+    if pattern.startswith("^"):
+        try:
+            return re.sub(pattern, "", text)
+        except re.error as e:
+            # 一条写坏的正则不能拖垮整轮处理：退回字面量删除并告警
+            logger.warning(f"replace 正则无效，按字面量处理：{pattern}（{e}）")
+            return text.replace(pattern, "")
+
     # 将通配符 * 转成正则表达式 .*，其他字符转义
     # print(f"使用通配符: {pattern}")
     regex_pattern = ''
