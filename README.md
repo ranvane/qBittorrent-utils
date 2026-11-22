@@ -158,6 +158,8 @@ python3 qbmanager.py
 └── qbmanager.log          # 运行日志（由 loguru 自动生成，支持自动轮转）
 ```
 
+> `.trackers_cache`、`state.json`、`qbmanager.log` 均为运行时产物，已写入 `.gitignore`，不会提交到仓库。
+
 ## 📝 贡献与反馈
 
 欢迎提交 Issue 报告 Bug 或分享您实用的 `rules.txt` 规则！也欢迎提交 Pull Request 完善本项目。

@@ -1,9 +1,15 @@
-/qb-web
-/__pycache__
-/__pycache__/*
+# ---- 运行时产物（本机只开发不运行，仅防止误提交）----
 qbmanager.log
-.trackers_cache
-trackers_cache.json
 state.json
 state.json.tmp
+trackers_cache.json
+.trackers_cache
+
+# ---- Python / 测试 ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ---- 本地工具 / 其他 ----
+/qb-web
 .omo/
