@@ -16,6 +16,7 @@
 - 🔀 **深层目录扁平化**：把所需文件的深层目录逐层上移到顶级文件夹正下方，目录结构更整洁。
 - ⚡ **自动 Tracker 优化**：定时从[ngosang/trackerslist](https://ngosang.github.io/trackerslist/trackers_best.txt) 拉取最新优质 Tracker，并自动去重追加到所有种子中，大幅提升死种/慢种的下载速度（内置 1 小时缓存防封机制）。
 - 🔥 **规则热加载 + 自动去重**：修改 `rules.txt` 后无需重启，下一次扫描自动应用；重复规则只加载一次。
+- 🧊 **处理状态门控**：`state.json` 记录每个种子的结构指纹，没变化的种子直接跳过，不再每分钟重复拉取全部文件列表；种子删除自动清状态，规则变更自动全量重扫。
 - 🧪 **内置规则试算工具**：不连 qB 也能验证规则，精确告诉你“处理后的字符串 + 哪条规则起作用了”。
 - 🛡️ **安全测试模式 (Dry Run)**：内置 Dry Run 模式，开启后仅在日志中输出将会执行的操作，避免误伤现有文件。
 
@@ -118,6 +119,8 @@ print(c.result, len(c.steps))
 | **规则自动去重** | 每次 `load()` 按“单条件”去重，重复项只加载一次并在日志中报告去重条数。判定结果不受影响（规则间是 OR 关系）。 |
 | **文件夹名不再用 best_name** | 顶级目录改为“替换后的原名”；`best_name`（中文最多优先）现在只用于**种子名**与顶级目录兜底。 |
 | **扁平化一步到位** | 深层目录直接移到顶级目录下（由深到浅），目标重名自动避让；多远种子（多个顶级目录）逐个处理。 |
+| **指纹门控** | `state.json` 记录「种子 hash → `added_on:total_size`」，结构没变的种子不拉文件列表、不处理。指纹**不含** `name`/`state`，否则我们自己的改名和下载状态会让它每分钟抖动。 |
+| **门控失效条件** | 规则文件 mtime/大小变化 → 全量重扫；处理抛异常或改名计划未全部成功 → 不记账、下一分钟重试；`dry_run` → 不写状态。手动在 qB 里改回脏名字不会被自动再清洗，删掉 `state.json` 即可强制全量。 |
 
 
 ## 🚀 使用指南
@@ -135,9 +138,12 @@ python3 qbmanager.py
 打开终端输入 `crontab -e`，添加以下内容（每分钟执行一次）：
 
 ```cron
-* * * * * /usr/bin/python3 /path/to/your/project/qbmanager.py
+* * * * * flock -n /tmp/qbmanager.lock /usr/bin/python3 /path/to/your/project/qbmanager.py
 ```
 *(请将 `/usr/bin/python3` 和 `/path/to/your/project/` 替换为您实际的 Python 路径和项目路径)*
+
+`flock -n` 用于防止上一轮还没跑完时下一轮又启动（两个实例同时写 `state.json` 会互相覆盖）。
+脚本首轮会全量处理，之后每轮只处理「新增 / 元数据到达 / 规则变更」的种子。
 
 ## 📂 项目结构
 
@@ -146,7 +152,9 @@ python3 qbmanager.py
 ├── qb_utils.py            # qB 实体类及通用工具函数封装
 ├── RuleEngine_utils.py    # 规则解析引擎 + 独立试算命令行工具
 ├── rules.txt              # 用户自定义的过滤与重命名规则（需自行创建）
+├── test_state_gate.py     # 处理状态门控的回归测试（pytest）
 ├── .trackers_cache        # Tracker 缓存文件（脚本自动生成）
+├── state.json             # 处理状态缓存（脚本自动生成，可随时删除）
 └── qbmanager.log          # 运行日志（由 loguru 自动生成，支持自动轮转）
 ```
 
@@ -159,6 +167,23 @@ python3 qbmanager.py
 本项目基于[MIT License](LICENSE) 协议开源，请自由使用、修改和分发。
 
 ## 📋 更新日志
+
+### 2026-11-22 — 新增处理状态门控，避免每分钟重复扫描
+
+**问题**
+
+- 重命名本身已是幂等的（计划只含真正变化的条目），但每轮仍对**每个种子**调 `torrents_files`，
+  种子多时每分钟上千次请求；`update_trackers` 还会把「最近 10 分钟」内的种子重复 `add_trackers` 十次。
+
+**改动**
+
+- 新增 `state.json`：记录 `规则指纹` + `种子 hash -> added_on:total_size` + `last_run`。
+- `Manager.run()`：先用 `torrents_info()` 算指纹，只把**结构有变化**的种子交给 `scan(pending)`；
+  处理成功才记账，失败不记账（下一分钟自动重试）；种子删除后自动清理状态；规则变更自动全量重扫。
+- `QBController.scan(torrents=None)`：可传入待处理种子，保留原有无参调用方式。
+- `update_trackers(since_ts=...)`：只处理上次成功运行之后添加的种子，不再重复加 10 分钟。
+- 状态写入走「临时文件 + `os.replace`」原子替换；`dry_run` 时不落盘。
+- 新增 `test_state_gate.py`（8 个 pytest 用例）；README 的 cron 示例加 `flock -n` 防重入。
 
 ### 2026-11-08 — 逻辑审查：修复 8 处缺陷
 

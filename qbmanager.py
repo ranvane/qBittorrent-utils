@@ -143,6 +143,75 @@ CONFIG = {
 # logger.add(CONFIG["log_file"], rotation="10 MB", retention=5)
 # logger.add(lambda msg: print(msg, end=""))
 
+# 处理状态缓存文件：记录“哪个种子已按哪版规则处理过”，用于跳过重复扫描
+STATE_FILE = "state.json"
+
+
+def _rules_signature():
+    """
+    计算规则文件指纹（mtime_ns + 大小）
+
+    规则一改，所有种子的清洗结果都可能变化，必须让历史记账全部失效、全量重扫一次。
+
+    返回:
+        str: 规则文件指纹；文件不存在时返回 "missing"
+    """
+    try:
+        st = os.stat(CONFIG["rule_file"])  # 取规则文件的元信息
+        return f"{st.st_mtime_ns}:{st.st_size}"  # 纳秒级 mtime，避免同秒内两次修改漏判
+    except OSError:
+        return "missing"  # 文件不存在：指纹固定，不会反复触发全量重扫
+
+
+def _torrent_signature(t):
+    """
+    计算种子结构指纹，只用 torrents_info 已有字段，不额外发请求
+
+    - added_on：区分“删掉后重新添加的同 hash 种子”，重新添加必须重新处理；
+    - total_size：magnet 元数据到达后 0 -> 真实大小，说明文件列表变了；
+    - 不能用 name / state：我们自己的改名和下载状态变化会让指纹抖动，导致反复重扫。
+
+    参数:
+        t: qBittorrent API 返回的原始种子对象
+
+    返回:
+        str: 结构指纹
+    """
+    return f"{getattr(t, 'added_on', 0)}:{getattr(t, 'total_size', 0)}"
+
+
+def load_state():
+    """
+    读取处理状态文件
+
+    返回:
+        dict: 状态字典；文件不存在或损坏时返回空字典（等价于全量扫一轮）
+    """
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    """
+    原子写入处理状态文件
+
+    先写临时文件再 os.replace：cron 中途被杀或磁盘写满时，
+    不会留下半截 JSON 导致下一轮读不出状态。
+
+    参数:
+        state (dict): 要保存的状态
+    """
+    tmp = STATE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp, STATE_FILE)  # 同目录原子替换
+    except Exception as e:
+        logger.error(f"保存状态文件失败: {e}")
+
 
 class CancelDownload(Action):
     """
@@ -483,6 +552,7 @@ class RenameDeepFolders(Action):
         """
         plan = build_rename_plan(self.files, self.engine,
                                  top_fallback=self.top_fallback)
+        self.plan = plan  # 暴露给调用方核对“计划是否全部执行成功”
         mapping = {}
 
         if CONFIG["dry_run"]:  # 模拟运行模式：只打印计划，不改动 qB
@@ -624,15 +694,21 @@ class QBController:
             logger.error(f"无法连接到qBittorrent服务器，请检查配置，{e}")
             return
 
-    def scan(self):
+    def scan(self, torrents=None):
         """
-        扫描当前所有的种子及其文件
+        扫描种子及其文件
         生成器函数，逐个返回种子和其对应的文件列表
+
+        参数:
+            torrents (list, optional): 待扫描的原始种子列表；
+                为空时自行拉取全部种子（保留旧调用方式）。
+                由 Manager 传入“指纹有变化”的种子，避免每分钟拉取全部文件列表。
 
         ⚠️ 单个种子取文件失败（路径异常、种子刚被删除等）必须跳过并继续，
         否则生成器抛异常会中断整个 for 循环，导致后续种子全部不处理。
         """
-        torrents = self.client.torrents_info()  # 获取所有种子信息
+        # 未指定种子时才请求全量列表，减少一次重复的 torrents_info 调用
+        torrents = torrents if torrents is not None else self.client.torrents_info()
 
         for t in torrents:  # 遍历所有种子
             torrent = Torrent(t)  # 创建Torrent对象
@@ -723,13 +799,15 @@ class QBController:
 
 
 def update_trackers(qb_controller,
+                    since_ts=None,
                     new_threshold_seconds=NEW_TORRENT_THRESHOLD):
     """
-    只给“正在下载”或“最近new_threshold_seconds时间内添加”的种子更新 tracker
+    只给“上次成功运行之后新添加”的种子更新 tracker
 
     参数:
         qb_controller (QBController): QBController实例
-        new_threshold_seconds (int): 判定为“新添加”的时间范围（秒）
+        since_ts (float, optional): 上次成功运行的时间戳；为空时退回旧的 10 分钟窗口
+        new_threshold_seconds (int): 无上次运行时间时，判定为“新添加”的时间范围（秒）
     """
     logger.info("开始增量更新种子 Tracker...")
 
@@ -745,29 +823,29 @@ def update_trackers(qb_controller,
 
     now = time.time()
 
+    # 首次运行或状态文件丢失时没有 since_ts，退回旧的“最近 N 秒”判断
+    if since_ts is None:
+        since_ts = now - new_threshold_seconds
+
     updated_count = 0
 
     # 3. 遍历种子进行逻辑判断
     for torrent in torrents:
-        # 条件 A: 是否处于活跃下载状态
-        is_active = torrent.state in ACTIVE_STATES
+        # 只处理上次成功运行之后添加的种子：
+        # 旧实现按“最近 10 分钟”判断，同一批种子会被每分钟重复 add 十次
+        if torrent.added_on < since_ts:
+            continue
 
-        # 条件 B: 是否为最近添加的种子
-        # torrent.added_on 是 Unix 时间戳
-        is_new = (now - torrent.added_on) < new_threshold_seconds
-
-        # if is_active: # 只更新活跃下载状态的种子
-        if is_new:  # 只更新最近添加的种子
-            try:
-                # 直接添加 external_trackers
-                # qBittorrent API 会自动忽略种子中已存在的 tracker，所以不需要手动去重
-                qb_controller.add_trackers_to_torrent(torrent.hash,
-                                                      external_trackers)
-                updated_count += 1
-                logger.debug(
-                    f"已更新种子: {torrent.name[:30]}... (状态: {torrent.state})")
-            except Exception as e:
-                logger.error(f"更新种子 {torrent.hash} 出错: {e}")
+        try:
+            # 直接添加 external_trackers
+            # qBittorrent API 会自动忽略种子中已存在的 tracker，所以不需要手动去重
+            qb_controller.add_trackers_to_torrent(torrent.hash,
+                                                  external_trackers)
+            updated_count += 1
+            logger.debug(
+                f"已更新种子: {torrent.name[:30]}... (状态: {torrent.state})")
+        except Exception as e:
+            logger.error(f"更新种子 {torrent.hash} 出错: {e}")
 
     logger.info(
         f"Tracker 更新任务完成：共检查 {len(torrents)} 个种子，实际更新了 {updated_count} 个符合条件的种子。"
@@ -814,27 +892,70 @@ class Manager:
 
         self.qb = QBController()  # 创建qBittorrent控制器实例
 
+        self.prev_run_ts = None  # 上次成功运行时间戳（状态文件读取，供 Tracker 增量用）
+
     def run(self):
         """
-        启动管理器主循环
-        持续监控和管理种子文件
+        单轮扫描：只处理“结构有变化”的种子，处理成功才记账
+
+        为什么需要指纹门控：
+            重命名本身已经是幂等的（计划只含真正有变化的条目，种子改名有同名判断），
+            但每个种子都要调一次 torrents_files 拉文件列表，种子多了每分钟上千请求。
+            所以这里用 torrents_info 里已有的字段判断“结构是否变过”，变了才拉文件列表。
+
+        记账规则：
+            只有 _process_torrent 全程无异常才写入指纹；失败的不记账，下一分钟自动重试。
         """
         self.qb.connect()  # 连接到qBittorrent服务器
 
-        # while True:  # 主循环 # 注释掉主循环，改为手动触发
-        #     time.sleep(CONFIG["scan_interval"])  # 等待指定的扫描间隔时间
         try:
             self.engine.load()  # 加载最新规则（热加载）
-            logger.info("开始扫描所有种子....")
-            for torrent, files in self.qb.scan():  # 扫描所有种子
+
+            state = load_state()  # 上次的处理状态
+            sig = _rules_signature()  # 规则文件指纹
+            done = state.get("torrents", {})  # 种子 hash -> 结构指纹
+            self.prev_run_ts = state.get("last_run")  # 供 update_trackers 增量判断
+
+            # 规则变更：历史记账全部失效，本轮全量重扫一次
+            if state.get("rules_sig") != sig:
+                logger.info("规则文件已变更，本轮全量重扫")
+                done = {}
+
+            # 只发一次请求，结构指纹也来自这里
+            torrents = self.qb.client.torrents_info()
+
+            # 清理已删除种子的状态，避免 state.json 无限膨胀
+            live = {t.hash for t in torrents}
+            stale = set(done) - live
+            if stale:
+                logger.info(f"清理已删除种子的状态：{len(stale)} 个")
+                done = {h: v for h, v in done.items() if h in live}
+
+            # 计算指纹并筛出本轮需要处理的种子
+            sigs = {t.hash: _torrent_signature(t) for t in torrents}
+            pending = [t for t in torrents if done.get(t.hash) != sigs[t.hash]]
+            logger.info(f"开始扫描所有种子.... 共 {len(torrents)} 个，"
+                        f"本轮需处理 {len(pending)} 个")
+
+            for torrent, files in self.qb.scan(pending):  # 只扫需要处理的种子
                 # 单个种子出错不能中断整轮扫描（AGENTS.md 设计约定第 5 条）：
                 # 例如某个种子路径异常、API 偶发失败，其余种子仍应继续处理
                 try:
-                    self._process_torrent(torrent, files)
+                    if not self._process_torrent(torrent, files):
+                        # 改名未全部成功：不记账，下一分钟重试
+                        continue
+                    done[torrent.hash] = sigs[torrent.hash]  # 成功才记账
                 except Exception:
+                    # 不记账 -> 下一分钟自动重试，这是保留 1 分钟 cron 的主要理由
                     logger.error(f"处理种子 {torrent.name} 失败：\n"
                                  f"{traceback.format_exc()}")
                     continue
+
+            # DRY 运行绝不落盘，否则真实运行会被整体跳过
+            if not CONFIG["dry_run"]:
+                save_state({"rules_sig": sig,
+                            "torrents": done,
+                            "last_run": time.time()})
 
         except Exception:  # 捕获所有异常
             logger.error(traceback.format_exc())  # 记录错误堆栈信息
@@ -846,6 +967,9 @@ class Manager:
         参数:
             torrent (Torrent): 种子对象
             files (list): 该种子的文件对象列表（原始快照）
+
+        返回:
+            bool: 重命名计划是否全部执行成功；False 时调用方不记账，下一轮重试
         """
         cancel_ids = []  # 存储需要取消下载的文件ID
 
@@ -873,9 +997,12 @@ class Manager:
         # 计划式重命名：先算完整计划（含冲突避让），再先改文件、后改目录（由深到浅）。
         # 不再需要 remap_path 前缀映射，避免重复应用替换规则和路径失效。
         # 顶级目录若被替换规则清空，则用 best_name 兜底（由 build_rename_plan 内部处理）
-        RenameDeepFolders(
-            torrent, files, self.engine,
-            top_fallback=best_name).execute(self.qb.client)
+        rename_op = RenameDeepFolders(torrent, files, self.engine,
+                                      top_fallback=best_name)
+        mapping = rename_op.execute(self.qb.client)
+        # 计划里的每一条都成功改名才算处理完成；有失败就返回 False 让下一轮重试
+        planned = len(rename_op.plan["files"]) + len(rename_op.plan["dirs"])
+        rename_ok = len(mapping) == planned
 
         # --------------------种子重命名------------------------------
         if (best_name and best_name != torrent.name):  # 如果最佳名称
@@ -918,6 +1045,8 @@ class Manager:
                 MoveFolder(torrent, old_dir, top_folder,
                            new_path=new_dir).execute(self.qb.client)
 
+        return rename_ok  # 供状态门控判断是否记账
+
 
 def main():
     """
@@ -929,7 +1058,8 @@ def main():
 
     # 更新所有种子的tracker列表
     # clear_all_trackers(manager.qb) # 清除所有种子的tracker, 涉及到比较耗时，请谨慎使用
-    update_trackers(manager.qb)
+    # 只处理上次成功运行之后新添加的种子，避免同一批种子每分钟重复 add
+    update_trackers(manager.qb, since_ts=manager.prev_run_ts)
 
 
 if __name__ == "__main__":  # 当脚本作为主程序运行时

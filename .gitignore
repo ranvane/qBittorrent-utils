@@ -4,4 +4,6 @@
 qbmanager.log
 .trackers_cache
 trackers_cache.json
+state.json
+state.json.tmp
 .omo/

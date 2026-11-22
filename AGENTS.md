@@ -24,6 +24,7 @@
 8. **深层目录扁平化**：过滤掉不需要的文件后，将所需文件（优先级≠0）所在的深层目录一步移到顶级文件夹正下方（由深到浅，目标重名自动避让）。
 9. **目录逐级替换规则**：对种子内**每一级目录**（含顶级目录）应用 `replace` 替换规则，深层目录不再残留广告前缀/后缀。
 10. **重名安全**：清洗后同名时自动生成 `名称_2` 后缀避让，避免 qB 409 冲突与目录被合并；后缀保证下一轮不再被规则改写（不振荡）。
+11. **处理状态门控**：`state.json` 记录“种子 hash → 结构指纹”，无变化的种子直接跳过，不再每分钟拉取全部文件列表；种子删除自动清理，规则变更自动全量重扫，处理失败不记账（下一分钟重试）。
 
 ---
 
@@ -36,6 +37,8 @@
 ├── rules.txt              # 用户自定义过滤与重命名规则
 ├── requirements.txt       # 依赖清单
 ├── trackers_cache.json    # Tracker 缓存文件（脚本自动生成，1 小时过期）
+├── state.json             # 处理状态缓存（脚本自动生成，种子 hash -> 结构指纹）
+├── test_state_gate.py     # 状态门控回归测试（pytest）
 ├── commit.sh              # 一键提交推送脚本（含代理配置）
 └── AGENTS.md              # 本文件（AI 协作规范）
 ```
@@ -56,15 +59,20 @@
 | `RenameFolder` | 重命名种子内顶级文件夹（**`Manager` 已不再调用**，顶级目录改由 `RenameDeepFolders` 统一处理；类保留供外部调用） |
 | `RenameDeepFolders` | **统一重命名**：一次生成全量计划（文件 + 每一级目录，含顶级），先改文件、后改目录（由深到浅）；计划阶段做重名避让，执行阶段对 409 冲突重新避让重试 |
 | `MoveFolder` | 移动文件夹；传入 `new_path` 时按计划一步到位，不传则兼容旧的“上移一级”行为 |
-| `QBController` | 连接 qB、扫描种子、Tracker 增删查 |
-| `update_trackers()` | 增量更新 Tracker（只更新最近添加/活跃下载的种子） |
+| `_rules_signature()` | 规则文件指纹（`mtime_ns:size`），变更即让全部记账失效、全量重扫 |
+| `_torrent_signature(t)` | 种子结构指纹（`added_on:total_size`），**只读 `torrents_info` 字段**，不额外发请求 |
+| `load_state()` / `save_state()` | 读写 `state.json`；保存走临时文件 + `os.replace` 原子替换 |
+| `QBController` | 连接 qB、扫描种子（`scan(torrents=None)`，传入时只扫指定种子）、Tracker 增删查 |
+| `update_trackers()` | 增量更新 Tracker（只更新**上次成功运行之后**添加的种子） |
 | `clear_all_trackers()` | 清除所有种子的 Tracker（谨慎使用，耗时） |
-| `Manager` | 主管理器：加载规则 → 扫描 → 过滤/重命名/目录重命名 → 取消下载 |
-| `main()` | 程序入口：运行 Manager，然后更新 Tracker |
+| `Manager` | 主管理器：加载规则 → 指纹门控筛出待处理种子 → 过滤/重命名/目录重命名 → 取消下载 → 记账 |
+| `main()` | 程序入口：运行 Manager，然后按 `prev_run_ts` 增量更新 Tracker |
 
 **关键常量**：
-- `NEW_TORRENT_THRESHOLD = 10 * 60`：10 分钟内添加的种子视为"新添加"
-- `ACTIVE_STATES`：活跃下载状态列表（downloading/stalledDL/metaDL 等）
+- `NEW_TORRENT_THRESHOLD = 10 * 60`：无 `last_run`（首次运行/状态丢失）时，“新添加”的判定窗口
+- `STATE_FILE = "state.json"`：处理状态缓存文件
+- `ACTIVE_STATES`：活跃下载状态列表（downloading/stalledDL/metaDL 等；当前仅保留定义，未参与判定）
+
 
 ### 4.2 `qb_utils.py` — 实体与工具
 
@@ -208,12 +216,27 @@ python3 RuleEngine_utils.py
     - **首选试算方式**：直接修改 `RuleEngine_utils.py` 末尾 `__main__` 中的测试字符串，依次调用 `explain_rename` / `explain_deep` / `explain_cancel`，运行 `python3 RuleEngine_utils.py` 查看命中报告。
     - 必要时在真实环境（或将 `CONFIG["dry_run"]` 置 `True` 的模拟环境）全流程运行 `python3 qbmanager.py` 验证。
     - **涉及 `rename()` / `remap_path` / 目录重命名的改动，必须额外做"新旧实现逐例对比"与"多级目录端到端"回归。**
+    - **涉及状态门控的改动必须跑 `python3 -m pytest test_state_gate.py -q`**（首轮全量、次轮跳过、新增种子、删除清理、规则变更、失败重试、DRY 不落盘）。
     - **测试未通过不得提交。**
 14. **提交规范（重要）**：测试全部通过后，**参考 `commit.sh` 中的代码提交到 git**：
     - 提交前先设置 Git 用户与代理（代理端口 `7890`），参考 `commit.sh` 中的 `git config` 与 `git add -A`、`git commit`、`git push origin` 流程。
     - 提交信息应清晰描述本次改动内容（避免沿用 `commit.sh` 里占位的 `"...."`，应写有意义的 message）。
     - 推送完成后按 `commit.sh` 中方式取消代理。
     - **本项目约定：修改测试完成后默认执行提交与推送**，无需再向用户确认。
+15. **处理状态门控约定（重要）**：`state.json` 是**性能缓存**，不是业务真相，任何时刻删掉都必须能正常工作（退化为全量重扫）。
+    - **目的**：重命名本身已幂等（计划只含真正变化的条目），真正的浪费是每轮对每个种子调 `torrents_files`。门控加在**扫描前**，不是加在 `RenameDeepFolders` 外面。
+    - ⚠️ **不要给 `RenameDeepFolders` 单独加"已改名"标记**：那样会连带跳过取消下载与扁平化，且省不掉扫描开销。
+    - **指纹只用 `torrents_info` 已有字段**：`added_on`（区分删除后重新添加）+ `total_size`（magnet 元数据到达后变化）。
+      ⚠️ 不能把 `name` / `state` 纳入指纹：我们自己的改名和下载状态变化会让指纹抖动，导致每分钟反复重扫。
+    - **只有 `_process_torrent` 返回 True 才记账**（无异常，且 `RenameDeepFolders` 的计划条目全部改名成功）；
+      失败或部分失败的种子不写指纹，下一分钟自动重试（这是保留 1 分钟 cron 的主要理由）。
+    - **`dry_run` 时绝不写状态**，否则 DRY 跑一轮就会把真实运行全部跳过。
+    - **规则变更即全量重扫**：`_rules_signature()`（`mtime_ns:size`）与 `state["rules_sig"]` 不一致时清空记账。
+    - **删除的种子必须清状态**：每轮用当前 hash 集合裁剪 `state["torrents"]`，否则 `state.json` 无限膨胀。
+    - **写状态必须原子**：临时文件 + `os.replace`，避免 cron 中途被杀留下半截 JSON。
+    - **Tracker 增量用 `last_run`**：`update_trackers(since_ts=prev_run_ts)` 只处理上次成功运行之后添加的种子，
+      不再按"最近 10 分钟"重复 `add_trackers`；无 `last_run` 时才退回 `NEW_TORRENT_THRESHOLD` 窗口。
+    - **建议 cron 加 `flock -n`**：单轮超过 60 秒时避免两个实例同时读写状态文件。
 
 ---
 
@@ -236,8 +259,8 @@ python3 RuleEngine_utils.py
 1. **理解稳定代码**：修改前先读懂现有逻辑，明确改动边界，最小化改动范围。
 2. **完成功能代码修改**：遵循「关键设计约定」，保持向后兼容。
 3. **同步更新 `AGENTS.md`**：审视本次改动影响的章节，编辑相应内容。
-4. **完整测试**：按「关键设计约定」第 9 条完整测试所有功能，确认未破坏既有行为。
-5. **提交推送**：测试通过后，按「关键设计约定」第 10 条参考 `commit.sh` 提交并推送 git。
+4. **完整测试**：按「关键设计约定」第 13 条完整测试所有功能，确认未破坏既有行为。
+5. **提交推送**：测试通过后，按「关键设计约定」第 14 条参考 `commit.sh` 提交并推送 git。
 
 > ⚠️ **测试未通过不得提交；`AGENTS.md` 未同步、未与本文件描述一致不得提交。**
 
