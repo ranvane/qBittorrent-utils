@@ -8,7 +8,11 @@
 
 **qBittorrent Auto Manager** 是一个基于 Python 编写的 qBittorrent 自动化辅助脚本。它通过调用 qBittorrent WebAPI，结合自定义规则引擎，实现种子下载全生命周期的自动化管理，包括垃圾文件过滤、多层级智能重命名以及 Tracker 自动优化。
 
-**运行方式**：无状态单次运行模式，配合 Linux `crontab` 定时调度（每分钟执行一次）。
+**运行方式**：单次运行模式，配合 Linux `crontab` 定时调度（每分钟执行一次，建议用 `flock -n` 防重入）。
+
+```cron
+* * * * * flock -n /tmp/qbmanager.lock /usr/bin/python3 /path/qbmanager.py
+```
 
 ---
 
@@ -236,7 +240,10 @@ python3 RuleEngine_utils.py
     - **写状态必须原子**：临时文件 + `os.replace`，避免 cron 中途被杀留下半截 JSON。
     - **Tracker 增量用 `last_run`**：`update_trackers(since_ts=prev_run_ts)` 只处理上次成功运行之后添加的种子，
       不再按"最近 10 分钟"重复 `add_trackers`；无 `last_run` 时才退回 `NEW_TORRENT_THRESHOLD` 窗口。
-    - **建议 cron 加 `flock -n`**：单轮超过 60 秒时避免两个实例同时读写状态文件。
+    - **cron 必须加 `flock -n` 防重入**：单轮超过 60 秒时避免两个实例同时读写状态文件：
+      ```cron
+      * * * * * flock -n /tmp/qbmanager.lock /usr/bin/python3 /path/qbmanager.py
+      ```
 
 ---
 

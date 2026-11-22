@@ -133,7 +133,7 @@ python3 qbmanager.py
 ```
 
 ### 方式二：配合 Cronjob 定时运行（推荐）
-本脚本被设计为无状态的单次运行模式，非常适合使用 Linux 系统的 `crontab` 进行定时调度。
+本脚本被设计为单次运行模式（带 `state.json` 状态缓存），非常适合使用 Linux 系统的 `crontab` 进行定时调度。
 
 打开终端输入 `crontab -e`，添加以下内容（每分钟执行一次）：
 
@@ -183,7 +183,7 @@ python3 qbmanager.py
 - `QBController.scan(torrents=None)`：可传入待处理种子，保留原有无参调用方式。
 - `update_trackers(since_ts=...)`：只处理上次成功运行之后添加的种子，不再重复加 10 分钟。
 - 状态写入走「临时文件 + `os.replace`」原子替换；`dry_run` 时不落盘。
-- 新增 `test_state_gate.py`（8 个 pytest 用例）；README 的 cron 示例加 `flock -n` 防重入。
+- 新增 `test_state_gate.py`（9 个 pytest 用例）；README 的 cron 示例加 `flock -n` 防重入。
 
 ### 2026-11-08 — 逻辑审查：修复 8 处缺陷
 
